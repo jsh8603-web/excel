@@ -28,6 +28,6 @@ out/
 Thumbs.db
 .DS_Store
 
-# --- 외부 다운로드 템플릿 (공개 repo이므로 외부 .xlsx 커밋 금지) ---
-templates_base/*.xlsx
-templates_base/*.xlsm
+# --- templates_base 베이스 .xlsx ---
+# repo가 private(솔로 내부 사용)이므로 라이선스 보유/직접 제작 베이스 .xlsx 커밋 허용.
+# ⚠ public 으로 재전환 시 외부 템플릿(Vertex42/CFI 등 재배포 금지)은 다시 제외할 것.

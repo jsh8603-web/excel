@@ -96,5 +96,5 @@ main.py  dispatch.md  sources.md  README.md  .gitignore
 - **옵션 B**: `Personal.xlsb`(개인 매크로 통합문서)에 공통층 배치 — 전역 반영.
   회사 PC에서 `XLSTART` 쓰기 권한 가능 여부 확인 후 결정. (본 파이썬 시스템은 둘과 독립)
 
-> ⚠️ 임의 결정 사항(나중에 확인): repo가 **public**이라 외부 템플릿 `.xlsx`는 커밋하지 않음(라이선스).
-> 전부 `house_style` 코드 생성모드로 처리. private 전환 시 `templates_base/` 베이스 커밋 가능.
+> repo는 **private**(솔로 내부 사용). 라이선스 보유/직접 제작 베이스 `.xlsx`는 `templates_base/`에 커밋 가능.
+> 기본은 `house_style` 코드 생성모드. ⚠ public 재전환 시 외부 템플릿(Vertex42/CFI 등 재배포 금지)은 다시 제외.

@@ -99,13 +99,13 @@ fpna/templates/       유형별 모듈. 각각 INPUT(dataclass)/golden_sample()/
 
 - 커밋: 내 코드 전부 + `vendor/`(.py만) + SKILL.md + 골든샘플(`samples/`) + 문서.
 - ⛔ 커밋 금지: `_sources/`(학습 clone), 남의 소스 복붙, `vendor/` 컴파일 산물, `archive/`, `out/`, `plan/progress.md`.
-- repo가 **public**이므로 외부 템플릿 .xlsx는 커밋 안 함(라이선스). private 전환 시 `templates_base/` 베이스 커밋 가능.
+- repo는 **private**(솔로 내부 사용) → 라이선스 보유/직접 제작 베이스 .xlsx를 `templates_base/`에 커밋 가능. ⚠ public 재전환 시 외부 템플릿(Vertex42/CFI 등 재배포 금지)은 다시 제외.
 - PAT는 `~/.claude/keys/github-pat.md`. push 후 remote URL에서 PAT 제거.
 - 커밋 메시지 = conventional commits(feat/fix/chore/refactor).
 
 ## 8. 미확정·임의결정 (확인 필요)
 
-- repo public → 외부 .xlsx 미커밋, 전부 house_style 코드 생성(결정함).
+- repo private(2026-06-09 전환 완료) → 베이스 .xlsx 커밋 가능. 기본은 house_style 코드 생성. public 재전환 시 외부 템플릿 재제외.
 - 폰트 맑은 고딕+Calibri 회사 PC 보유 가정.
 - 배포 방식 A(워크북별 import) vs B(`Personal.xlsb`) 미정 — 파이썬 시스템과 독립이라 영향 없음.
 - behead의 `up-left`/`left-up` 정렬 우선순위는 리서치 일부 추론분 — 골든 테스트 통과했으나 실데이터 재확인 권장.
