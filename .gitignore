@@ -1,0 +1,33 @@
+# --- 학습 참고용 clone (커밋 금지) ---
+_sources/
+
+# --- 홈 빌드/검증 산출물 (회사 런타임 의존 아님) ---
+# tools/ 의 COM 검증 스크립트 자체는 커밋하되, 그 산출물은 제외
+*.png
+*.pdf
+verify_out/
+
+# --- 작업 스캐폴딩 (회사 pull 대상 아님) ---
+archive/
+plan.md
+progress.md
+.home-cwd-warning
+
+# --- 파이썬 캐시 ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# --- 중간 산출 (재현 가능, 커밋 불필요) ---
+# 단, samples/ 아래 골든샘플은 명시적으로 커밋
+out/
+*.tmp
+
+# --- OS / 에디터 ---
+Thumbs.db
+.DS_Store
+
+# --- 외부 다운로드 템플릿 (공개 repo이므로 외부 .xlsx 커밋 금지) ---
+templates_base/*.xlsx
+templates_base/*.xlsm
