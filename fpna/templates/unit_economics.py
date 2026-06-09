@@ -55,12 +55,13 @@ def build(data: UnitEconInput, *, mode="create", base_path=None) -> openpyxl.Wor
                 number_format=hs.FMT_NUM1)
     life_r = r; r += 1
     hs.set_cell(ws, r, 1, "LTV", role="label", align=hs.LEFT)
-    hs.set_cell(ws, r, 2, "=%s*%s*B%d" % (arpu_c, gm_c, life_r), role="calc",
-                number_format=hs.FMT_INT, bold=True)
+    # 고객수명이 ""(churn=0/미입력)이면 텍스트 곱셈 #VALUE! → 방어
+    hs.set_cell(ws, r, 2, "=IF(B%d=\"\",\"\",%s*%s*B%d)" % (life_r, arpu_c, gm_c, life_r),
+                role="calc", number_format=hs.FMT_INT, bold=True)
     ltv_r = r; r += 1
     hs.set_cell(ws, r, 1, "LTV/CAC", role="label", align=hs.LEFT)
-    hs.set_cell(ws, r, 2, "=IF(%s=0,\"\",B%d/%s)" % (cac_c, ltv_r, cac_c), role="calc",
-                number_format=hs.FMT_MULT, bold=True)
+    hs.set_cell(ws, r, 2, "=IF(OR(%s=0,B%d=\"\"),\"\",B%d/%s)" % (cac_c, ltv_r, ltv_r, cac_c),
+                role="calc", number_format=hs.FMT_MULT, bold=True)
     r += 1
     hs.set_cell(ws, r, 1, "CAC 회수(월)", role="label", align=hs.LEFT)
     hs.set_cell(ws, r, 2, "=IF(%s*%s=0,\"\",%s/(%s*%s))" % (arpu_c, gm_c, cac_c, arpu_c, gm_c),
