@@ -156,6 +156,17 @@ class TestCrypto(unittest.TestCase):
         with self.assertRaises(ValueError):
             decrypt_text("pw", tampered)
 
+    def test_mail_split_roundtrip(self):
+        from fpna.crypto import encrypt_text, to_mail_text, decrypt_text
+        msg = "line %d data 1234 한글\n" * 300
+        arm = encrypt_text("pw", msg)
+        parts = to_mail_text(arm, max_lines=5, msg_id="T")
+        self.assertGreater(len(parts), 1)                  # 여러 통으로 분할
+        for p in parts:
+            self.assertLessEqual(p.count("\n") + 1, 5)     # 메일당 줄수 한정 준수
+        combined = "\n".join(reversed(parts))              # 역순으로 붙여도
+        self.assertEqual(decrypt_text("pw", combined), msg)  # 정렬·복원
+
 
 class TestTemplatesQC(unittest.TestCase):
     def test_all_golden_pass_qc(self):

@@ -45,7 +45,13 @@ def encrypt_text(passphrase: str, plaintext: str) -> str:
 
 
 def decrypt_text(passphrase: str, armored: str) -> str:
-    """armored base64 텍스트 → 평문. 변조/오답 passphrase 면 ValueError."""
+    """armored base64 텍스트 → 평문. 변조/오답 passphrase 면 ValueError.
+
+    메일 part 마커(-----FPNAC1 ... PART k/n-----)가 섞여 있으면 자동으로
+    추출·순서정렬·결합한다. 여러 메일 본문을 한 파일에 붙여넣어도 복원된다.
+    """
+    if "FPNAC1" in armored and "PART" in armored:
+        armored = from_mail_text(armored)
     blob = base64.b64decode("".join(armored.split()))  # 공백/줄바꿈 허용
     if blob[:6] != _MAGIC:
         raise ValueError("형식 불일치: FPNAC1 헤더 없음")
@@ -54,6 +60,50 @@ def decrypt_text(passphrase: str, armored: str) -> str:
         raise ValueError("형식 손상: 헤더 길이 불일치")
     key = _derive(passphrase, salt)
     return aead_decrypt(key, nonce, ct, tag).decode("utf-8")
+
+
+# -----------------------------------------------------------------------------
+# 메일 본문 운반 (파일 첨부 X — 텍스트로 붙여넣기). 줄 wrap + 메일당 줄수 한정.
+# -----------------------------------------------------------------------------
+_WRAP = 76                 # PEM 스타일 줄 폭
+_DEFAULT_MAX_LINES = 500   # 메일당 최대 줄수(헤더/푸터 포함). 초과분만 part 분할.
+
+import re as _re
+
+
+def to_mail_text(armored: str, *, wrap: int = _WRAP,
+                 max_lines: int = _DEFAULT_MAX_LINES, msg_id: str = "MSG") -> list[str]:
+    """armored(한 줄) → 메일 본문 part 리스트. 줄 wrap 후 메일당 max_lines 로 분할.
+
+    각 part = 헤더 + wrapped base64 + 푸터. 한 통이면 part 1/1.
+    너무 많이 초과하지 않게 본문 줄수를 max_lines-2(헤더/푸터)로 캡한다.
+    """
+    body = "".join(armored.split())
+    lines = [body[i:i + wrap] for i in range(0, len(body), wrap)] or [""]
+    cap = max(1, max_lines - 2)
+    chunks = [lines[i:i + cap] for i in range(0, len(lines), cap)]
+    n = len(chunks)
+    parts = []
+    for k, ch in enumerate(chunks, 1):
+        head = "-----FPNAC1 %s PART %d/%d-----" % (msg_id, k, n)
+        foot = "-----FPNAC1 %s END %d/%d-----" % (msg_id, k, n)
+        parts.append("\n".join([head] + ch + [foot]))
+    return parts
+
+
+def from_mail_text(text: str) -> str:
+    """part 마커가 섞인 텍스트(여러 메일 합본 가능) → 순서정렬·결합한 base64.
+
+    마커가 없으면 공백만 제거해 반환(단일 armored 호환).
+    """
+    blocks = _re.findall(
+        r"-----FPNAC1\s+\S+\s+PART\s+(\d+)/(\d+)-----\s*(.*?)\s*"
+        r"-----FPNAC1\s+\S+\s+END\s+\1/\2-----",
+        text, _re.S)
+    if not blocks:
+        return "".join(text.split())
+    blocks.sort(key=lambda b: int(b[0]))
+    return "".join("".join(b[2].split()) for b in blocks)
 
 
 def encrypt_file(passphrase: str, in_path: str, out_path: str) -> int:

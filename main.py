@@ -117,14 +117,48 @@ def _read_passphrase(args):
 
 
 def cmd_encrypt(args):
-    from fpna.crypto import encrypt_file
+    from fpna.crypto import encrypt_file, encrypt_text, to_mail_text
     if not args:
-        _print("사용: py main.py encrypt <평문파일> [out.enc.txt] [--pass 암구호]"); return 2
+        _print("사용: py main.py encrypt <평문파일> [out] [--pass 암구호] "
+               "[--mail] [--max-lines N]"); return 2
     pw, rest = _read_passphrase(args)
+    mail = "--mail" in rest
+    rest = [x for x in rest if x != "--mail"]
+    max_lines = 500
+    if "--max-lines" in rest:
+        i = rest.index("--max-lines")
+        try:
+            max_lines = int(rest[i + 1])
+        except (IndexError, ValueError):
+            pass
+        rest = rest[:i] + rest[i + 2:]
     infile = rest[0]
-    out = rest[1] if len(rest) > 1 else infile + ".enc.txt"
-    n = encrypt_file(pw, infile, out)
-    _print("암호화 → %s (%d자 armored). passphrase 는 별도 채널로 공유하세요." % (out, n))
+    if not mail:
+        out = rest[1] if len(rest) > 1 else infile + ".enc.txt"
+        n = encrypt_file(pw, infile, out)
+        _print("암호화 → %s (%d자 armored). passphrase 는 별도 채널로 공유하세요." % (out, n))
+        return 0
+    # --mail: 메일 본문 텍스트(들)로. 첨부 아님 — 그대로 복붙해서 보낸다.
+    import os
+    with open(infile, "r", encoding="utf-8", newline="") as fh:
+        armored = encrypt_text(pw, fh.read())
+    mid = (os.path.splitext(os.path.basename(infile))[0][:8] or "MSG")
+    parts = to_mail_text(armored, max_lines=max_lines, msg_id=mid)
+    base = rest[1] if len(rest) > 1 else infile + ".mail.txt"
+    if len(parts) == 1:
+        with open(base, "w", encoding="utf-8", newline="") as fh:
+            fh.write(parts[0] + "\n")
+        _print("메일 본문 1통 → %s (%d줄). 내용을 메일 본문에 붙여넣어 보내세요."
+               % (base, parts[0].count(chr(10)) + 1))
+    else:
+        root, ext = os.path.splitext(base)
+        for k, p in enumerate(parts, 1):
+            with open("%s.part%d%s" % (root, k, ext), "w", encoding="utf-8", newline="") as fh:
+                fh.write(p + "\n")
+        _print("메일 %d통 분할 → %s.part1..%d%s (메일당 ≤%d줄). 각 part 를 별도 메일 본문에 붙여넣으세요."
+               % (len(parts), root, len(parts), ext, max_lines))
+        _print("받는 쪽은 메일들을 한 파일에 모두 붙여넣고 decrypt 하면 자동 정렬·복원됩니다.")
+    _print("passphrase 는 별도 채널로 공유. 제목엔 [claude] 유지(암호화 안 함).")
     return 0
 
 

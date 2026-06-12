@@ -25,7 +25,10 @@
 ```powershell
 py main.py selftest          # 골든샘플 10종 QC + ingest 픽스처 회귀 → ALL PASS 여야 함
 py -m unittest tests.test_fpna   # stdlib 회귀 (pytest 불필요)
-py main.py ingest "<파일.xlsx>" out\ingest [--sheet 시트명]
+py main.py ingest "<파일.xlsx>" out\ingest [--sheet 시트명]   # 누더기 엑셀 → tidy
+py main.py profile "<마트.csv>" out\profile_spec.yaml         # 정제 마트테이블 → 차원없는 SHAPE 스키마(회사→집)
+py main.py encrypt <평문> [out] --mail [--max-lines N]        # 메일 본문 텍스트로 암호화(길면 part 분할)
+py main.py decrypt <암호문> [out]                             # 복호화(part 마커 자동 합본·정렬)
 py main.py dispatch "<요청 텍스트>"
 py main.py render <type> out\<type>.xlsx
 py main.py list
@@ -52,6 +55,8 @@ fpna/_bootstrap.py    vendor/ 주입. 모든 진입점이 최우선 import.
 fpna/house_style.py   룩 SSOT(색·폰트·숫자서식·보더·차트). 룩 변경은 여기 한 곳만.
 fpna/finance.py       순수파이썬 NPV/IRR/payback/CAGR/variance/비율. QC 재계산도 여기 사용.
 fpna/ingest/          누더기→tidy. cells→detect→headers→normalize→validate→pipeline 순.
+fpna/profile.py       정제 마트테이블 → 차원없는 SHAPE 스키마(yaml, 8축). ⚠ 누더기는 ingest, 정제 마트는 profile(다른 단계).
+fpna/crypto.py        텍스트 대칭 암복호화(ChaCha20-Poly1305+scrypt). _chacha.py=RFC8439 이식. 메일 본문 운반·part 분할.
 fpna/dispatcher.py    요청 텍스트 + 컬럼 단서 → 템플릿 유형.
 fpna/render.py        build → QC 게이트 → (통과 시만) 저장.
 fpna/templates/       유형별 모듈. 각각 INPUT(dataclass)/golden_sample()/build()/qc().
