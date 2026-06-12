@@ -7,6 +7,9 @@ main.py — FP&A Excel 시스템 단일 진입점.
 명령:
   py main.py selftest                      # 골든샘플 전부 + ingest 픽스처 회귀
   py main.py ingest <파일.xlsx> [out_dir]  # 누더기 엑셀 → tidy.csv/schema.json/smell_report.md
+  py main.py profile <마트.csv> [out.yaml] # 정제 마트테이블 → 차원없는 SHAPE 스키마(회사→집 운반용)
+  py main.py encrypt <평문> [out] [--pass X] # 텍스트 대칭암호화(ChaCha20-Poly1305+scrypt) → armored
+  py main.py decrypt <암호문> [out] [--pass X] # 복호화(passphrase 오답·변조 시 거부)
   py main.py dispatch "<요청 텍스트>"        # 어느 템플릿을 쓸지 판정
   py main.py render <type> [out.xlsx]       # 골든샘플로 템플릿 렌더(QC 게이트)
   py main.py golden [type]                  # 골든샘플 빌드+QC (type 생략 시 전부)
@@ -51,6 +54,92 @@ def cmd_ingest(args):
            % (res.n_blocks, len(res.tidy_rows), res.report.n_rejected, out_dir))
     if res.smells:
         _print("수식 스멜 %d건 → smell_report.md 확인" % len(res.smells))
+    return 0
+
+
+def _parse_opt_list(rest, flag):
+    """--flag a b c  → (값리스트|None, flag 제거된 rest). 다음 --옵션 전까지."""
+    if flag not in rest:
+        return None, rest
+    i = rest.index(flag)
+    vals = []
+    j = i + 1
+    while j < len(rest) and not rest[j].startswith("--"):
+        vals.append(rest[j]); j += 1
+    return (vals or None), rest[:i] + rest[j:]
+
+
+def cmd_profile(args):
+    from fpna.profile import run_profile
+    if not args:
+        _print("사용: py main.py profile <마트.csv> [out.yaml] "
+               "[--date-col 컬럼] [--measures a b] [--grain a b] [--with-names]")
+        return 2
+    path = args[0]
+    rest = args[1:]
+    include_names = False
+    if "--with-names" in rest:
+        include_names = True
+        rest = [x for x in rest if x != "--with-names"]
+    date_col = None
+    if "--date-col" in rest:
+        i = rest.index("--date-col")
+        date_col = rest[i + 1] if i + 1 < len(rest) else None
+        rest = rest[:i] + rest[i + 2:]
+    measures, rest = _parse_opt_list(rest, "--measures")
+    grain, rest = _parse_opt_list(rest, "--grain")
+    out = rest[0] if rest else "out/profile_spec.yaml"
+    import os
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    spec = run_profile(path, out, date_col=date_col, measures=measures,
+                       grain=grain, include_member_names=include_names)
+    tname = next(iter(spec["tables"]))
+    ncols = len(spec["tables"][tname]["columns"])
+    _print("SHAPE 프로파일 추출: 테이블 '%s', 컬럼 %d개 → %s" % (tname, ncols, out))
+    _print("⚠ 값·이름 미포함(차원없는 형태만). 텍스트라 메일/화면으로 운반 가능.")
+    if include_names:
+        _print("⚠ --with-names: 멤버 이름 포함됨 — 민감하면 제거 후 운반.")
+    return 0
+
+
+def _read_passphrase(args):
+    """--pass X 우선, 없으면 getpass 프롬프트. (passphrase, 남은args)."""
+    if "--pass" in args:
+        i = args.index("--pass")
+        pw = args[i + 1] if i + 1 < len(args) else ""
+        return pw, args[:i] + args[i + 2:]
+    import getpass
+    try:
+        pw = getpass.getpass("passphrase: ")
+    except Exception:
+        pw = input("passphrase: ")
+    return pw, args
+
+
+def cmd_encrypt(args):
+    from fpna.crypto import encrypt_file
+    if not args:
+        _print("사용: py main.py encrypt <평문파일> [out.enc.txt] [--pass 암구호]"); return 2
+    pw, rest = _read_passphrase(args)
+    infile = rest[0]
+    out = rest[1] if len(rest) > 1 else infile + ".enc.txt"
+    n = encrypt_file(pw, infile, out)
+    _print("암호화 → %s (%d자 armored). passphrase 는 별도 채널로 공유하세요." % (out, n))
+    return 0
+
+
+def cmd_decrypt(args):
+    from fpna.crypto import decrypt_file
+    if not args:
+        _print("사용: py main.py decrypt <암호문파일> [out] [--pass 암구호]"); return 2
+    pw, rest = _read_passphrase(args)
+    infile = rest[0]
+    out = rest[1] if len(rest) > 1 else (infile[:-8] if infile.endswith(".enc.txt") else infile + ".dec")
+    try:
+        n = decrypt_file(pw, infile, out)
+    except ValueError as e:
+        _print("복호화 실패: %s" % e); return 1
+    _print("복호화 → %s (%d자)" % (out, n))
     return 0
 
 
@@ -111,8 +200,10 @@ def cmd_selftest(_args):
 
 
 _COMMANDS = {
-    "list": cmd_list, "ingest": cmd_ingest, "dispatch": cmd_dispatch,
-    "render": cmd_render, "golden": cmd_golden, "selftest": cmd_selftest,
+    "list": cmd_list, "ingest": cmd_ingest, "profile": cmd_profile,
+    "encrypt": cmd_encrypt, "decrypt": cmd_decrypt,
+    "dispatch": cmd_dispatch, "render": cmd_render, "golden": cmd_golden,
+    "selftest": cmd_selftest,
 }
 
 

@@ -79,6 +79,84 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(d.template, "variance")
 
 
+class TestProfile(unittest.TestCase):
+    """정제 마트 → SHAPE 추출. ⚠ 결정적 구조 픽스처(난수·실금액 아님)."""
+
+    SEAS = [0.80, 0.77, 0.86, 0.92, 0.95, 0.99, 0.98, 0.98, 1.03, 1.11, 1.24, 1.37]
+
+    def _make_mart(self, path):
+        import csv
+        rows = [["entity", "account", "period", "budget", "actual"]]
+        for ent in ("E1", "E2"):
+            for acc in ("Rev", "COGS"):
+                for yi in range(2):
+                    for mo in range(1, 13):
+                        pi = yi * 12 + (mo - 1)
+                        b = round(1000 * (1.02 ** pi) * self.SEAS[mo - 1])
+                        a = round(b * 1.05)  # actual = budget×1.05 → 완전 상관
+                        rows.append([ent, acc, "%d-%02d-01" % (2023 + yi, mo), b, a])
+        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+            csv.writer(fh).writerows(rows)
+
+    def test_axes_recovered(self):
+        from fpna.profile import profile_table
+        with tempfile.TemporaryDirectory() as tmp:
+            csvp = os.path.join(tmp, "mart.csv")
+            self._make_mart(csvp)
+            spec = profile_table(csvp)
+            cols = spec["tables"]["mart"]["columns"]
+            self.assertEqual(cols["entity"]["type"], "choice")
+            self.assertEqual(cols["entity"]["n"], 2)
+            self.assertEqual(cols["period"]["type"], "date")
+            self.assertEqual(cols["budget"]["type"], "measure")
+            # 추세 ≈ 0.02 (입력), 시즌 12개·12월>1월
+            self.assertAlmostEqual(cols["budget"]["trend"], 0.02, places=2)
+            seas = cols["budget"]["seasonality"]
+            self.assertEqual(len(seas), 12)
+            self.assertGreater(seas[11], seas[0])
+            # actual = budget×1.05 → 상관 ≈ 1.0
+            self.assertEqual(cols["actual"].get("corr_with"), "budget")
+            self.assertGreater(cols["actual"]["corr"], 0.99)
+
+    def test_no_value_leak(self):
+        from fpna.profile import profile_table, emit_yaml
+        with tempfile.TemporaryDirectory() as tmp:
+            csvp = os.path.join(tmp, "mart.csv")
+            self._make_mart(csvp)
+            text = emit_yaml(profile_table(csvp))
+            self.assertIn("EDIT_ME_scale", text)          # base = 자리표시자
+            self.assertNotIn("1000", text)                # 절대 금액 미유출
+            self.assertNotIn("1050", text)
+
+
+class TestCrypto(unittest.TestCase):
+    def test_rfc8439_vectors(self):
+        from fpna._chacha import test_vectors
+        self.assertTrue(test_vectors())
+
+    def test_roundtrip_unicode_newline(self):
+        from fpna.crypto import encrypt_text, decrypt_text
+        msg = "다국어 ünïcode 1,234 (단위:천원)\n줄바꿈\t탭 ✓"
+        arm = encrypt_text("pw-암호", msg)
+        self.assertEqual(decrypt_text("pw-암호", arm), msg)
+
+    def test_wrong_passphrase_rejected(self):
+        from fpna.crypto import encrypt_text, decrypt_text
+        arm = encrypt_text("right-pw", "secret")
+        with self.assertRaises(ValueError):
+            decrypt_text("wrong-pw", arm)
+
+    def test_tamper_rejected(self):
+        import base64
+        from fpna.crypto import encrypt_text, decrypt_text
+        arm = encrypt_text("pw", "secret payload")
+        blob = bytearray(base64.b64decode(arm))
+        blob[-1] ^= 0x01  # ciphertext 1비트 변조
+        tampered = base64.b64encode(bytes(blob)).decode()
+        with self.assertRaises(ValueError):
+            decrypt_text("pw", tampered)
+
+
 class TestTemplatesQC(unittest.TestCase):
     def test_all_golden_pass_qc(self):
         for t in available():
