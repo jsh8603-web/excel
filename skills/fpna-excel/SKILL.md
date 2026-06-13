@@ -50,6 +50,7 @@ description: >
 
 - **검증은 메인경로가 소유한다(확정)**: `run_report` 가 ①~⑤ 순서를 **base-owned 로 강제**한다. 템플릿이 자율 `qc()` 에서 빠뜨려도 스파인의 `_base_owned_gate` 가 수식에러·grain·anomaly 보존을 잡는다. 저장(`render`)은 스파인 안에서만 mint 되는 receipt 를 요구하므로(토큰+wb 해시 재대조) 스파인을 우회한 저장은 불가능하다. → "검증은 특수상황 끝이 아니라 메인경로가 소유."
 - **render 게이트의 의미**: `QCReport.passed=False` 는 **"산출물이 부정직하다"**(정합/tie-out/보존 위반)는 뜻이지 "데이터에 문제 있음"이 아니다. anomaly(미계상·부호반전 같은 *발견*)는 저장을 막지 않고 flag 로 노출하며, anomaly 의 **은폐**만 저장을 막는다.
+- ⚠ **검증 신뢰의 스코프 한정(정직)**: 보존검증(T4 conserve)이 통과해도 그건 **"산수가 자기일관"**이라는 뜻이지 **"입력 숫자가 옳다"가 아니다**(garbage-in). 잘못된 입력을 정확히 합산하면 통과한다. ingest 충실도(per-cell recon)가 함께 서기 전까지 "재계산 일치"로만 말하고 "숫자 정확"으로 과장하지 않는다.
 
 ## 2. 템플릿 라우팅 (stage=analysis 일 때만 → dispatch → render)
 
