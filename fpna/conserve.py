@@ -16,6 +16,16 @@ ConserveSpec(선언) = 보일러플레이트 킬러. 템플릿이 (raw_sum_fn, r
 
 source-resolver 제네릭(자문 R3): raw_sum_fn 은 단일 INPUT 뿐 아니라 여러 시트 facts
 dict 도 source 로 받을 수 있다 → B 크로스시트 tie 가 같은 ConserveSpec 으로 재사용된다.
+
+★검출력 한계(독립 리뷰 2026-06-13 — 정직 박제):
+  - **집계 spec**(sum(parts) == 보고 grand): raw_sum_fn 과 build 의 grand 가 같은 집계식이면
+    이건 N-version 이 아니라 **drift/메타 손상 가드**다. 보고값 표류·메타 오염은 잡지만,
+    집계식 자체의 버그(부호·연산자)는 두 경로가 같이 틀려 침묵 통과한다.
+  - **변환 spec**(상각/리스/NPV/롤포워드): build 와 다른 알고리즘 경로로 재유도하면
+    진짜 formula N-version 이라 off-by-one·부호를 노출한다. 이쪽이 침묵형 오답의 해독제.
+  - 변이 하니스(test)는 INPUT 만 흔들고 식을 co-mutate 하지 않으므로 위 집계 tautology 를
+    구조적으로 못 잡는다 → 집계 spec 의 신뢰는 "drift 가드"로 한정해 읽어야 한다.
+  후속(point reported_key at the rendered total CELL)으로 집계도 진짜 독립화 가능(plan §C).
 """
 from __future__ import annotations
 
@@ -45,12 +55,16 @@ class ConserveSpec:
 def eval_specs(specs, source, meta) -> list:
     """specs 를 (name, lhs_independent, rhs_reported, tol) 리스트로 평가.
 
-    스파인이 이걸 받아 assert_tie_out 한다. rhs None(키 부재)도 그대로 전달 →
-    스파인이 실패로 처리(보고 누락 = 게이트 통과 금지).
+    스파인이 이걸 받아 assert_tie_out 한다. lhs/rhs None(raw 계산 예외 또는 키 부재)도
+    그대로 전달 → 소비자가 실패로 처리(게이트 통과 금지). raw_sum_fn 내부 예외(키 오타·
+    0나눗셈·None)는 여기서 격리 → 호출자(build_report/qc) 전체 크래시 방지.
     """
     out = []
     for s in specs:
-        lhs = s.sign * float(s.raw_sum_fn(source))
+        try:
+            lhs = s.sign * float(s.raw_sum_fn(source))
+        except Exception:
+            lhs = None                      # raw 독립계산 실패 = 게이트 FAIL(크래시 X)
         rhs = meta.get(s.reported_key) if meta else None
         out.append((s.name, lhs, rhs, s.tol))
     return out

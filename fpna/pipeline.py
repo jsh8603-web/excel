@@ -142,10 +142,15 @@ def _base_owned_gate(rep: QCReport, wb, data, template) -> bool:
     # raw_sum_fn 은 모듈경계 독립(build 호출 금지, test_conserve 가 ast 로 강제).
     specs = getattr(template, "CONSERVE_SPECS", None)
     if specs:
+        if hasattr(template, "conserves"):
+            # 같은 등식 이중평가·OK/XX 혼선 방지(품질 리뷰): 둘 중 하나만 허용.
+            rep.add("T4 보존: conserves+CONSERVE_SPECS 동시선언 금지", False,
+                    "템플릿이 두 방식을 혼용 — 하나로 통일")
         from fpna.conserve import eval_specs
         for name, lhs, rhs, tol in eval_specs(specs, data, _meta(wb)):
-            if rhs is None:
-                rep.add("T4 보존:%s" % name, False, "reported_key 부재(보고 누락)")
+            if lhs is None or rhs is None:
+                rep.add("T4 보존:%s" % name, False,
+                        "raw 독립계산 실패" if lhs is None else "reported_key 부재(보고 누락)")
             else:
                 vc.assert_tie_out(rep, lhs, rhs, tol=tol, name="T4 보존:%s" % name)
     return rep.passed

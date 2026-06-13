@@ -121,11 +121,10 @@ def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workb
 
 # --------------------------------------------------------------------------- #
 # T2 바인딩 (from_tidy) — module-level                                         #
-#   conserves 는 deferred: budget_build 는 합계를 Excel 수식(=SUM)에만 두고     #
-#   _fpna_meta 에 보고 총계를 심지 않는다. T4 보존은 reported = _fpna_meta[...] #
-#   를 전제하므로 여기선 tie 대상이 없다 → conserves 미구현(silent cap 금지,    #
-#   본 주석으로 deferred 명시). 필요 시 build 가 grand 를 _fpna_meta 에 심는     #
-#   변경이 선행돼야 함(build 변경은 본 작업 스코프 밖).                          #
+#   T4: build 가 _fpna_meta["grand"] 를 심으므로 CONSERVE_SPECS 가 동작한다     #
+#   (deferred 아님 — 이전 주석 오기 정정). 단 reported 와 raw_sum_fn 이 같은     #
+#   집계식이라 N-version 이 아니라 drift/메타 손상 가드다(식 자체 버그 못 잡음,  #
+#   conserve.py 한계 주석). 진짜 formula N-version 은 변환계열이 담당.           #
 # --------------------------------------------------------------------------- #
 GRAIN = ("dept",)                              # 1행 = 1 부서
 REQUIRED = ("depts",)

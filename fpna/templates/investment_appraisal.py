@@ -298,10 +298,11 @@ def qc(wb: openpyxl.Workbook, data: InvestmentInput) -> QCReport:
     # NPV 재계산(파이썬) — 셀 수식 의도 검증(유효 할인율·TV 반영)
     py_npv = finance.npv(eff_rate, eff_cfs)
     rep.add("NPV 계산 가능", py_npv is not None, "")
-    # N-version(자문 R2 C6): finance.npv(=NPV 셀 수식의 SSOT) 와 독립으로 NPV 를
-    #   직접 Σcf[t]/(1+r)^t 로 다시 풀어 대조. finance.npv 회귀(부호·오프셋·지수)나
-    #   TV 가산 오류를 두 경로가 같이 틀리지 않게 N-version 으로 잡는다. eff_cfs/
-    #   eff_rate 도 INPUT 에서 인라인 재구성(빌드 헬퍼 _effective_* 비의존).
+    # N-version(자문 R2 C6) — ★부분 독립(정직, 독립 리뷰 2026-06-13):
+    #   cashflow/TV 조립은 INPUT(data.cashflows + terminal_value)에서 인라인 재구성하므로
+    #   TV 이중가산·CF 오프셋은 독립으로 잡는다. 단 **eff_rate 는 _effective_rate 헬퍼를
+    #   공유**한다 → rate 도출 버그(WACC 합성 등)는 두 경로가 같이 틀려 못 잡는다.
+    #   할인지수(**t) 자체도 동일식 → off-by-one 은 미검. 즉 "CF/TV 조립 가드"로 한정.
     ind_cfs = list(data.cashflows)
     if data.terminal_value is not None and ind_cfs:
         ind_cfs[-1] = ind_cfs[-1] + data.terminal_value

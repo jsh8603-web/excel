@@ -81,9 +81,10 @@ def build_report(spec: ReportSpec, ctx=None) -> openpyxl.Workbook:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)                      # 기본 빈 시트 제거
 
+    titles = _resolve_titles(spec)           # s.name → 31자·유일 시트 제목(충돌 dedup)
     facts: dict = {}
     for s in spec.sheets:
-        ws = wb.create_sheet(hs.safe_sheet_title(s.name))
+        ws = wb.create_sheet(titles[s.name])
         color = TAB_COLORS.get(s.section)
         if color:
             ws.sheet_properties.tabColor = color
@@ -92,11 +93,29 @@ def build_report(spec: ReportSpec, ctx=None) -> openpyxl.Workbook:
     flat = _flatten(facts)
     _build_check_sheet(wb, spec, flat)
     _build_cover(wb, spec)
-    _build_toc(wb, spec)
-    _reorder(wb, spec)
+    _build_toc(wb, spec, titles)
+    _reorder(wb, spec, titles)
 
-    wb._fpna_meta = {"facts": facts, "flat": flat}
+    wb.calculation.fullCalcOnLoad = True       # artifact-gap 완화(B도 스파인과 동일 규율)
+    wb._fpna_meta = {"facts": facts, "flat": flat, "titles": titles}
     return wb
+
+
+def _resolve_titles(spec) -> dict:
+    """s.name → 31자 truncate + 유일성 보장 시트 제목. 긴 한글명 충돌 시 silent
+    rename(openpyxl) 으로 목차 하이퍼링크·정렬이 깨지는 것을 방지(엣지 리뷰)."""
+    used: set = set()
+    out: dict = {}
+    for s in spec.sheets:
+        base = hs.safe_sheet_title(s.name)
+        title, k = base, 2
+        while title in used:
+            suf = "~%d" % k
+            title = base[:31 - len(suf)] + suf
+            k += 1
+        used.add(title)
+        out[s.name] = title
+    return out
 
 
 def _build_check_sheet(wb, spec, flat) -> None:
@@ -110,9 +129,9 @@ def _build_check_sheet(wb, spec, flat) -> None:
         hs.set_cell(ws, r, j, h, role="header")
     r += 1
     for name, lhs, rhs, tol in eval_specs(spec.cross_specs, flat, flat):
-        ok = (rhs is not None) and (abs(lhs - rhs) <= tol)
+        ok = (lhs is not None) and (rhs is not None) and (abs(lhs - rhs) <= tol)
         hs.set_cell(ws, r, 1, name, role="label", align=hs.LEFT)
-        hs.set_cell(ws, r, 2, lhs, role="calc", number_format=hs.FMT_INT)
+        hs.set_cell(ws, r, 2, lhs if lhs is not None else "—", role="calc", number_format=hs.FMT_INT)
         hs.set_cell(ws, r, 3, rhs if rhs is not None else "—", role="calc", number_format=hs.FMT_INT)
         hs.set_cell(ws, r, 4, "OK" if ok else "XX", role="total",
                     align=hs.CENTER, bold=True)
@@ -133,38 +152,43 @@ def _build_cover(wb, spec) -> None:
     hs.set_widths(ws, {1: 14, 2: 14, 3: 14, 4: 14, 5: 14, 6: 14})
 
 
-def _build_toc(wb, spec) -> None:
-    """목차 — 각 시트로 내부 하이퍼링크(#'시트명'!A1)."""
+def _build_toc(wb, spec, titles) -> None:
+    """목차 — 각 시트로 내부 하이퍼링크(#'시트명'!A1). titles=유일 제목 맵."""
     ws = wb.create_sheet(hs.safe_sheet_title("목차"))
     ws.sheet_properties.tabColor = TAB_COLORS["toc"]
     r = hs.title_block(ws, "목차 (Index)", row=2, last_col=4) + 1
     hs.set_widths(ws, {1: 6, 2: 36})
     n = 1
     ordered = sorted(spec.sheets, key=lambda s: _ORDER.get(s.section, 5))
-    for s in list(ordered) + [SheetSpec("검증", None, "check")]:
-        title = (s.title or s.name)
+    for s in ordered:
+        label = (s.title or s.name)
+        sheet_title = titles[s.name]
         hs.set_cell(ws, r, 1, n, role="soft", align=hs.CENTER)
-        cell = hs.set_cell(ws, r, 2, title, role="link", align=hs.LEFT)
-        cell.hyperlink = "#'%s'!A1" % hs.safe_sheet_title(s.name)   # 한글·공백 단일따옴표
+        cell = hs.set_cell(ws, r, 2, label, role="link", align=hs.LEFT)
+        cell.hyperlink = "#'%s'!A1" % sheet_title       # 한글·공백 단일따옴표
         r += 1
         n += 1
+    # 검증 시트 링크
+    hs.set_cell(ws, r, 1, n, role="soft", align=hs.CENTER)
+    cell = hs.set_cell(ws, r, 2, "검증 (Tie-out)", role="link", align=hs.LEFT)
+    cell.hyperlink = "#'%s'!A1" % hs.safe_sheet_title("검증")
     hs.style_sheet(ws, freeze=None)
 
 
-def _reorder(wb, spec) -> None:
-    """표지(0)·목차(1)·요약·상세·검증(last) 순으로 시트 정렬."""
+def _reorder(wb, spec, titles) -> None:
+    """표지(0)·목차(1)·요약·상세·검증(last) 순으로 시트 정렬. titles=유일 제목 맵."""
+    title2sec = {titles[s.name]: s.section for s in spec.sheets}
+
     def key(ws):
-        title = ws.title
-        if title.startswith("표지"):
+        t = ws.title
+        if t.startswith("표지"):
             return 0
-        if title.startswith("목차"):
+        if t.startswith("목차"):
             return 1
-        if title.startswith("검증"):
+        if t.startswith("검증"):
             return 99
-        sec = next((s.section for s in spec.sheets
-                    if hs.safe_sheet_title(s.name) == title), "detail")
-        return _ORDER.get(sec, 5)
-    wb._sheets.sort(key=key)
+        return _ORDER.get(title2sec.get(t, "detail"), 5)
+    wb._sheets.sort(key=key)        # openpyxl internal — 버전 민감(품질 리뷰 인지)
     wb.active = 0
 
 
@@ -172,10 +196,11 @@ def qc_report(wb, spec: ReportSpec) -> QCReport:
     """리포트 QC — 수식에러 0 + 크로스시트 tie(메모리값). 스파인이 호출."""
     rep = QCReport("report:" + spec.title)
     qc_no_formula_errors(wb, rep)
-    flat = wb._fpna_meta["flat"]
+    flat = (getattr(wb, "_fpna_meta", None) or {}).get("flat", {})   # build_report 외 경로 방어
     for name, lhs, rhs, tol in eval_specs(spec.cross_specs, flat, flat):
-        if rhs is None:
-            rep.add("크로스tie:%s" % name, False, "reported 부재")
+        if lhs is None or rhs is None:
+            rep.add("크로스tie:%s" % name, False,
+                    "raw 계산 실패" if lhs is None else "reported 부재")
         else:
             rep.add("크로스tie:%s" % name, abs(lhs - rhs) <= tol,
                     "" if abs(lhs - rhs) <= tol else "독립=%.6g 보고=%.6g" % (lhs, rhs))

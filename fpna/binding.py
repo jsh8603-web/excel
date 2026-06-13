@@ -25,9 +25,17 @@ from __future__ import annotations
 
 import csv as _csv
 import datetime as _dt
+import math
+import re
 from itertools import groupby
 
 import fpna._bootstrap  # noqa: F401
+
+# 천단위 콤마 패턴(정수부 1-3자리 + 3자리 그룹 반복). "1,200"/"12,000,000" 통과,
+# "1,2,3"/"1,23" 거부 → 다값병합·오타를 silent 흡수하지 않음.
+_THOUSANDS_RE = re.compile(r"\d{1,3}(,\d{3})+(\.\d+)?")
+# 흔한 날짜 포맷(ISO 외 한국 실데이터) — strptime 시도 순서.
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m", "%Y/%m", "%Y.%m", "%Y%m%d")
 
 
 # --------------------------------------------------------------------------- #
@@ -85,26 +93,44 @@ def _parse_number(s, typ):
     if t.startswith("(") and t.endswith(")"):     # 회계 괄호 음수 (1,200) = -1200
         neg = True
         t = t[1:-1]
-    # 통화기호·천단위 콤마·공백·'원' 제거
-    for ch in ("₩", "$", "€", "£", ",", " ", "원"):
+    # 통화기호·공백·'원' 제거(콤마는 천단위 검증 후 별도 처리)
+    for ch in ("₩", "$", "€", "£", " ", "원"):
         t = t.replace(ch, "")
     if t in ("", "-", "—"):
         return None
-    v = typ(float(t)) if typ is int else float(t)
-    if typ is int and float(t) != int(float(t)):
+    # 콤마는 천단위 구분자일 때만 허용 — "1,2,3"(다값병합·오타) silent 흡수 금지(엣지 리뷰).
+    if "," in t:
+        core = t[1:] if t[:1] == "-" else t
+        if not _THOUSANDS_RE.fullmatch(core):
+            raise ValueError("콤마가 천단위 구분자 아님(다값·오타 의심): %r" % s)
+        t = t.replace(",", "")
+    f = float(t)
+    if not math.isfinite(f):                       # nan/inf 문자열 silent 흡수 금지
+        raise ValueError("유한수 아님(nan/inf): %r" % s)
+    if typ is int and f != int(f):
         # 소수를 int 로 요구하면 반올림 대신 명확 실패(결정성)
         raise ValueError("int 컬럼에 소수 값: %r" % s)
+    v = int(f) if typ is int else f
     return -v if neg else v
 
 
 def _parse_date(s):
-    """ISO date 파싱. 'YYYY-MM-DD' 또는 'YYYY/MM/DD'. 실패 시 ValueError."""
+    """date 파싱. ISO + 한국 실데이터 흔한 포맷(YYYY.MM.DD/YYYY-MM 등). 실패 시 ValueError."""
     if isinstance(s, _dt.datetime):
         return s.date()
     if isinstance(s, _dt.date):
         return s
-    t = str(s).strip().replace("/", "-")
-    return _dt.date.fromisoformat(t)
+    t = str(s).strip()
+    try:
+        return _dt.date.fromisoformat(t.replace("/", "-"))
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return _dt.datetime.strptime(t, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError("지원 않는 날짜 포맷: %r" % s)
 
 
 # --------------------------------------------------------------------------- #
