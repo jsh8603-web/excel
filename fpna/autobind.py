@@ -65,6 +65,21 @@ def autobind(rows: list, *, template: str | None = None, title: str = ""):
     return rec, fn(rows, summ, title)
 
 
+def build_checked(rows: list, *, template: str | None = None, title: str = "",
+                  out_path: str | None = None, force: bool = False):
+    """rows → autobind → **run_report 스파인 경유** 빌드+QC+(저장). RunResult 반환.
+
+    ★ mod.build(inp) 직접 호출은 스파인(QC·receipt)을 우회한다 — 그러면 계약 위반·
+    결측 은폐가 걸러지지 않고 저장된다. 라이브러리로 실데이터를 빌드할 때는 이 헬퍼를
+    써서 검증을 강제한다(main.py render/pack/report 와 동일 경로). out_path 주면 QC
+    통과 시에만 저장된다.
+    """
+    from fpna.pipeline import run_report
+    from fpna.templates import get_template
+    t, inp = autobind(rows, template=template, title=title)
+    return run_report(get_template(t), inp, out_path=out_path, force=force)
+
+
 def pivot_conserved(rows: list, inp, template: str) -> bool:
     """피벗 Σ 보존: long 원본 measure 합 == 산출 합(왜곡·누락 0). period_trend 전용."""
     if template != "period_trend" or not rows:
@@ -78,4 +93,4 @@ def pivot_conserved(rows: list, inp, template: str) -> bool:
     return True
 
 
-__all__ = ["autobind", "pivot_conserved"]
+__all__ = ["autobind", "build_checked", "pivot_conserved"]

@@ -5,6 +5,13 @@ fpna.analyze — 다중시트 워크북 구조 스캔 + 템플릿/팩 추천.
 컬럼 의미를 추론하고, recommend 로 시트별 착지 템플릿을 정한다. 시트가 여러 개면
 연동(pack) 후보를 안내한다. ⛔ 도메인 사전 0 — 시트 역할은 *구조*(시계열/항목·금액/
 식별자 목록)로만 태그한다(손익/BS 같은 도메인 라벨 X).
+
+★빌드 경유 주의: analyze 는 *읽기 전용 구조 스캔*이다. 실제 산출은 반드시 run_report
+스파인 경유(main.py render/pack/report, 또는 autobind.build_checked)로 만들어야 QC
+게이트(계약 위반·결측 은폐·tie)가 걸린다. mod.build(inp) 직접 호출은 스파인을 우회해
+검증 없이 wb 를 만든다(저장 금지 — 우회 경로). 또한 analyze 는 data_only 로 값만 보므로
+시트 간 수식 연결(SUMIFS 등)은 감지하지 못한다 — 연결 보존이 필요하면 원본 fill 모드
+또는 pack(공유 facts 재현)을 쓰되, 원본 라이브 수식 링크 자체는 재현되지 않음(값 정합만).
 """
 from __future__ import annotations
 
