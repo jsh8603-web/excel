@@ -133,6 +133,32 @@ def build_merge_index(ws: Worksheet) -> dict[tuple[int, int], tuple[int, int]]:
     return idx
 
 
+# as_cells 안전 상한: 실데이터 경계 면적이 이걸 넘으면 명시적 에러로 차단(조용한 OOM/행 방지).
+MAX_INGEST_CELLS = 3_000_000
+
+
+def _content_extent(ws: Worksheet) -> tuple[int, int]:
+    """시트에서 '실제 값/수식이 있는' 셀의 최대 (row, col).
+
+    openpyxl 의 sparse `_cells` 를 직접 보아 멀리 떨어진 '잔여 서식'(값 없는 빈칸)은 제외한다.
+    → max_row/max_column 이 잔여 서식 한 칸 때문에 부풀려져도 실데이터 경계만 잡는다.
+    `_cells` 부재(read_only 시트)면 (0,0) → 호출측이 max_row/col 로 폴백.
+    """
+    store = getattr(ws, "_cells", None)
+    if not store:
+        return 0, 0
+    mr = mc = 0
+    for (r, c), cell in store.items():
+        v = cell.value
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            continue
+        if r > mr:
+            mr = r
+        if c > mc:
+            mc = c
+    return mr, mc
+
+
 def as_cells(ws_formula: Worksheet, ws_value: Worksheet | None = None) -> list[Cell]:
     """워크시트를 Cell 리스트로 평면화.
 
@@ -142,19 +168,54 @@ def as_cells(ws_formula: Worksheet, ws_value: Worksheet | None = None) -> list[C
     값은 ws_value(있으면) 우선, 수식은 ws_formula 에서 채운다.
     openpyxl 한계상 ws_value 의 캐시는 'Excel 이 마지막 저장한 값' 이므로
     미개봉 파일은 None 일 수 있다(상위에서 경고).
+
+    ⚠ 경계는 부풀려진 bbox(max_row×max_col)가 아니라 '실데이터 경계'(_content_extent
+    + 값셀 + 병합영역)로 clamp 한다 — 잔여 서식 한 칸 때문에 수백만 빈 Cell 을 만들어
+    메모리가 터지는(=조용히 멈추는) 사고를 막는다. 경계 내부의 빈칸은 병합전파·ditto fill 에
+    필요하므로 그대로 유지한다.
     """
     merged = build_merge_index(ws_formula)
     cells: list[Cell] = []
-    max_row = ws_formula.max_row or 0
-    max_col = ws_formula.max_column or 0
+    bbox_row = ws_formula.max_row or 0
+    bbox_col = ws_formula.max_column or 0
 
     val_grid = {}
     if ws_value is not None:
-        for r in range(1, (ws_value.max_row or 0) + 1):
-            for c in range(1, (ws_value.max_column or 0) + 1):
-                v = ws_value.cell(row=r, column=c).value
+        vstore = getattr(ws_value, "_cells", None)
+        if vstore:                              # sparse 우선(부풀린 bbox 전수순회 회피)
+            for (r, c), cell in vstore.items():
+                v = cell.value
                 if v is not None:
                     val_grid[(r, c)] = v
+        else:                                   # read_only 등 _cells 부재 → 종전 방식 폴백
+            for r in range(1, (ws_value.max_row or 0) + 1):
+                for c in range(1, (ws_value.max_column or 0) + 1):
+                    v = ws_value.cell(row=r, column=c).value
+                    if v is not None:
+                        val_grid[(r, c)] = v
+
+    # 실데이터 경계 = 값/수식 보유 셀 ∪ 값셀 ∪ 병합영역(잔여 서식 빈칸은 제외).
+    fr, fc = _content_extent(ws_formula)
+    max_row = max(fr, max((r for (r, _) in val_grid), default=0),
+                  max((r for (r, _) in merged), default=0))
+    max_col = max(fc, max((c for (_, c) in val_grid), default=0),
+                  max((c for (_, c) in merged), default=0))
+    if max_row == 0:                            # sparse 폴백 실패 → 종전 bbox 사용
+        max_row = bbox_row
+    if max_col == 0:
+        max_col = bbox_col
+    if bbox_row:                                # 안전: 부풀린 bbox 를 절대 넘지 않음
+        max_row = min(max_row, bbox_row)
+    if bbox_col:
+        max_col = min(max_col, bbox_col)
+
+    area = max_row * max_col
+    if area > MAX_INGEST_CELLS:                 # 거대 시트 → 조용한 멈춤 대신 명시 차단
+        raise ValueError(
+            "시트가 너무 큼: 실데이터 경계 %d행 × %d열 = %d셀 (상한 %d). "
+            "--sheet 로 단일 시트를 지정하거나 데이터 범위를 줄여 다시 시도하세요."
+            % (max_row, max_col, area, MAX_INGEST_CELLS)
+        )
 
     for r in range(1, max_row + 1):
         for c in range(1, max_col + 1):

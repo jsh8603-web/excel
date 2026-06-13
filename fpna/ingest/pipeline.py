@@ -226,16 +226,23 @@ def _apply_subtotal_and_hierarchy(rows: list[TidyRow], smells: list) -> None:
         grp_sorted = sorted(grp, key=lambda r: r.src_row)
         # --- G5 산술 소계: 후보 == 나머지 형제(소계 아님) 합 ---
         numeric = [r for r in grp_sorted if num(r) is not None]
+        # ⚠ label_is_subtotal 는 행당 1회만 계산한다. 형제 합도 그룹당 1회만 구하고
+        #   각 행에서 자기 값만 차감 → O(G²)(큰 시트 폭주) 를 O(G) 로 낮춘다.
+        non_sub = [o for o in numeric
+                   if not label_is_subtotal(getattr(o, "_g5_label", ""))]
+        non_sub_sum = sum(num(o) for o in non_sub)
+        non_sub_ids = {id(o) for o in non_sub}
         for r in grp_sorted:
             v = num(r)
             bold = getattr(r, "_g5_bold", False)
             label = getattr(r, "_g5_label", "")
             arith = False
             if v is not None and len(numeric) >= 2:
-                # 형제 = 자신 외, 소계 라벨 아닌 나머지 numeric.
-                sibs = [o for o in numeric if o is not r
-                        and not label_is_subtotal(getattr(o, "_g5_label", ""))]
-                if sibs and abs(v - sum(num(o) for o in sibs)) <= _ARITH_TOL * (abs(v) + 1):
+                # 형제 = 자신 외, 소계 라벨 아닌 나머지 numeric (합 1회분에서 자기 차감).
+                r_in = id(r) in non_sub_ids
+                sibs_sum = non_sub_sum - (v if r_in else 0.0)
+                sibs_n = len(non_sub) - (1 if r_in else 0)
+                if sibs_n >= 1 and abs(v - sibs_sum) <= _ARITH_TOL * (abs(v) + 1):
                     arith = True
             score, _sig = subtotal_signal_score(label, bold=bold, arith_match=arith)
             if score >= 2:

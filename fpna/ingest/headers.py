@@ -240,15 +240,26 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
 
     from .normalize import leading_space_level, strip_footnote_marker
 
+    import bisect as _bisect
+
+    # ⚠ 루프 불변식 선계산: 헤더 레벨/밴드를 데이터 셀마다 재계산하면 O(셀×헤더)=O(n²)
+    #   (행라벨은 행당 1개라 큰 시트에서 폭주). 밴드는 1회만 만든다.
+    col_levels = sorted({h.row for h in headers_col})
+    col_bands = {hr: [h for h in headers_col if h.row == hr] for hr in col_levels}
+    row_levels = sorted({h.col for h in headers_row})
+    # 행라벨 밴드: 열 고정 → row 오름차순 1회 정렬 + bisect 로 'row<=d.row 최대' O(log n).
+    row_bands: dict = {}
+    for hc in row_levels:
+        band = sorted((h for h in headers_row if h.col == hc), key=lambda h: h.row)
+        row_bands[hc] = (band, [h.row for h in band])
+
     out: list[LongRow] = []
     for d in data_cells:
         attrs: dict = {}
         level = 0
-        # 열헤더 레벨(위에서 아래로 여러 행)
-        col_levels = sorted({h.row for h in headers_col})
+        # 열헤더 레벨(위→아래 여러 행) — 밴드가 작아 선형 매칭 유지.
         for i, hr in enumerate(col_levels):
-            band = [h for h in headers_col if h.row == hr]
-            h = nearest_header(d, band, "up-left")
+            h = nearest_header(d, col_bands[hr], "up-left")
             name = (col_header_names[i] if col_header_names and i < len(col_header_names)
                     else "hdr_c%d" % i)
             # G7: 열헤더 각주마커 제거 → 동일 논리열 키 통일.
@@ -256,12 +267,15 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
             if isinstance(hv, str):
                 hv, _ = strip_footnote_marker(hv)
             attrs[name] = hv
-        # 행헤더 레벨(왼쪽에서 오른쪽으로 여러 열)
-        row_levels = sorted({h.col for h in headers_row})
+        # 행헤더 레벨(왼→오 여러 열) — left-up = col<d.col, row<=d.row 중 최대 row.
         inner_label = None     # 가장 안쪽(오른쪽) 행라벨 셀
         for i, hc in enumerate(row_levels):
-            band = [h for h in headers_row if h.col == hc]
-            h = nearest_header(d, band, "left-up")
+            h = None
+            if hc < d.col:                      # nearest_header 의 h.col < d.col 조건과 동일
+                band, brows = row_bands[hc]
+                j = _bisect.bisect_right(brows, d.row) - 1   # row <= d.row 중 최대
+                if j >= 0:
+                    h = band[j]
             name = (row_header_names[i] if row_header_names and i < len(row_header_names)
                     else "hdr_r%d" % i)
             attrs[name] = h.value if h else None

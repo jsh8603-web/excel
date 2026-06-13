@@ -191,6 +191,24 @@ def _row_signature(block_cells: list[Cell], row: int) -> tuple:
     return tuple(out)
 
 
+def _index_by_row(block_cells: list[Cell]) -> dict:
+    """행번호 → 비빈칸 셀 리스트(1회 구축). 행마다 전체 셀 재스캔(O(rows×cells)) 회피."""
+    idx: dict = {}
+    for c in block_cells:
+        if not c.is_blank:
+            idx.setdefault(c.row, []).append(c)
+    return idx
+
+
+def _row_signature_of(rc: list[Cell]) -> tuple:
+    """행 셀들에서 (col, 정규화 텍스트) 시그니처. 값셀 제외(_row_signature 와 동일 로직)."""
+    out = []
+    for c in sorted(rc, key=lambda x: x.col):
+        if isinstance(c.value, str):
+            out.append((c.col, c.value.strip().lower().replace(" ", "")))
+    return tuple(out)
+
+
 def strip_repeated_header_rows(block_cells: list[Cell], b: Block,
                                header_rows: list[int]) -> tuple[list[Cell], list[int]]:
     """G8: 페이지브레이크로 표 중간 재삽입된 헤더행(첫 헤더와 동일) 제거.
@@ -201,23 +219,25 @@ def strip_repeated_header_rows(block_cells: list[Cell], b: Block,
     """
     if not header_rows:
         return block_cells, []
-    header_sigs = {_row_signature(block_cells, r) for r in header_rows}
+    by_row = _index_by_row(block_cells)          # ⚠ 행 인덱스 1회 → 루프 내 재스캔 제거(O(n²)→O(n))
+    header_sigs = {_row_signature_of(by_row.get(r, [])) for r in header_rows}
     header_sigs.discard(())
     if not header_sigs:
         return block_cells, []
     data_start = max(header_rows) + 1
     dropped: list[int] = []
     for r in range(data_start, b.max_row + 1):
-        rc = _row_cells(block_cells, r)
+        rc = by_row.get(r)
         if not rc:
             continue
         if any(c.data_type == T_NUMERIC for c in rc):
             continue  # 숫자 동반 = 데이터 행
-        if _row_signature(block_cells, r) in header_sigs:
+        if _row_signature_of(rc) in header_sigs:
             dropped.append(r)
     if not dropped:
         return block_cells, []
-    remaining = [c for c in block_cells if c.row not in dropped]
+    dropped_set = set(dropped)
+    remaining = [c for c in block_cells if c.row not in dropped_set]
     return remaining, dropped
 
 
