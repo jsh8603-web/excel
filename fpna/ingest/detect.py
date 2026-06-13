@@ -182,6 +182,45 @@ def strip_footnote_rows(block_cells: list[Cell], b: Block) -> tuple[list[Cell], 
     return remaining, foot_rows
 
 
+def _row_signature(block_cells: list[Cell], row: int) -> tuple:
+    """행의 (col, 정규화된 텍스트) 시그니처. 헤더 동일성 비교용(값셀은 제외)."""
+    out = []
+    for c in sorted(_row_cells(block_cells, row), key=lambda x: x.col):
+        if isinstance(c.value, str):
+            out.append((c.col, c.value.strip().lower().replace(" ", "")))
+    return tuple(out)
+
+
+def strip_repeated_header_rows(block_cells: list[Cell], b: Block,
+                               header_rows: list[int]) -> tuple[list[Cell], list[int]]:
+    """G8: 페이지브레이크로 표 중간 재삽입된 헤더행(첫 헤더와 동일) 제거.
+
+    header_rows = 블록 상단 헤더 밴드 행번호들. 그 시그니처(텍스트만)와 동일한
+    데이터영역 행을 찾아 제거 → 데이터에서 배제. 반환: (남은셀, 제거행번호).
+    숫자가 1개라도 있는 행은 진짜 데이터로 보고 보존(헤더 오인 방지).
+    """
+    if not header_rows:
+        return block_cells, []
+    header_sigs = {_row_signature(block_cells, r) for r in header_rows}
+    header_sigs.discard(())
+    if not header_sigs:
+        return block_cells, []
+    data_start = max(header_rows) + 1
+    dropped: list[int] = []
+    for r in range(data_start, b.max_row + 1):
+        rc = _row_cells(block_cells, r)
+        if not rc:
+            continue
+        if any(c.data_type == T_NUMERIC for c in rc):
+            continue  # 숫자 동반 = 데이터 행
+        if _row_signature(block_cells, r) in header_sigs:
+            dropped.append(r)
+    if not dropped:
+        return block_cells, []
+    remaining = [c for c in block_cells if c.row not in dropped]
+    return remaining, dropped
+
+
 def label_is_subtotal(label: str) -> bool:
     if not label:
         return False
@@ -189,8 +228,39 @@ def label_is_subtotal(label: str) -> bool:
     return any(kw.replace(" ", "") in s for kw in SUBTOTAL_KW)
 
 
+# --------------------------------------------------------------------------
+# G5 색/볼드 소계 + 색 음수
+# --------------------------------------------------------------------------
+# 빨강 폰트 화이트리스트(음수 신호). _color_hex 는 끝 6자리 대문자 → FF0000 정규화.
+RED_FONT_WHITELIST = {"FF0000", "C00000", "FF0000FF"[-6:]}
+
+
+def is_red_font(color_hex) -> bool:
+    """폰트색이 '회계 빨강 음수' 화이트리스트인가. (FFFF0000→FF0000 정규화 가정)."""
+    if not color_hex:
+        return False
+    return str(color_hex).upper()[-6:] in RED_FONT_WHITELIST
+
+
+def subtotal_signal_score(label, *, bold: bool = False,
+                          arith_match: bool = False) -> tuple[int, dict]:
+    """소계 3신호(label/bold/arith) 교집합 점수.
+
+    G5: label(소계/합계/계 정규식) + bold(font.bold) + 산술(row합==sibling합).
+    반환: (score 0~3, {signal:bool}). score≥2 이면 호출측이 is_subtotal 판정.
+    """
+    sig = {
+        "label": label_is_subtotal(label),
+        "bold": bool(bold),
+        "arith": bool(arith_match),
+    }
+    return sum(1 for v in sig.values() if v), sig
+
+
 __all__ = [
     "Block", "detect_blocks", "cells_in_block",
-    "strip_title_rows", "strip_footnote_rows", "label_is_subtotal",
+    "strip_title_rows", "strip_footnote_rows", "strip_repeated_header_rows",
+    "label_is_subtotal",
+    "subtotal_signal_score", "is_red_font", "RED_FONT_WHITELIST",
     "UNIT_RE", "SUBTOTAL_KW",
 ]

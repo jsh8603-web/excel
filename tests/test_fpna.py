@@ -188,6 +188,115 @@ class TestIngest(unittest.TestCase):
         err_smells = [s for s in res.smells if s["kind"] == "ERROR_CELL"]
         self.assertEqual(len(err_smells), 3)
 
+    # ------------------------------------------------------------------
+    # 무음손상 외 패턴 골든(G3 들여쓰기계층 / G5 색·볼드소계+색음수 /
+    #                       G7 각주마커 / G8 반복헤더).
+    # ⚠ 합성 *구조* 더미 — 재무 수치 의미 없음(계층/소계/마커 로직 검증용).
+    # ------------------------------------------------------------------
+    def test_g3_indent_hierarchy(self):
+        """G3: alignment.indent + 선행공백 → level 산출 + 부모==Σ자식 정합 플래그."""
+        from openpyxl.styles import Alignment
+
+        def build(ws):
+            ws["A1"], ws["B1"] = "계정", "2024"
+            ws["A2"], ws["B2"] = "영업비용", 300     # 부모(level0)
+            ws["A3"], ws["B3"] = "인건비", 200       # 자식(indent 1)
+            ws["A4"], ws["B4"] = "임차료", 100       # 자식(indent 1)
+            ws["A2"].alignment = Alignment(indent=0)
+            ws["A3"].alignment = Alignment(indent=1)
+            ws["A4"].alignment = Alignment(indent=1)
+        res = self._ingest_wb(build)
+        rows = {r.entity: r for r in res.tidy_rows}
+        # 들여쓰기가 level 로 반영
+        self.assertEqual(rows["영업비용"].level, 0)
+        self.assertEqual(rows["인건비"].level, 1)
+        self.assertEqual(rows["임차료"].level, 1)
+        # 부모(300) == 자식합(200+100) → PARENT_EQ_CHILDREN_SUM
+        self.assertIn("PARENT_EQ_CHILDREN_SUM", rows["영업비용"].flags)
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("PARENT_EQ_CHILDREN_SUM", kinds)
+
+    def test_g3_leading_space_level(self):
+        """선행공백 2칸=1레벨 환산(indent 속성 없이도 계층 복원)."""
+        from fpna.ingest.normalize import leading_space_level
+        self.assertEqual(leading_space_level("매출"), 0)
+        self.assertEqual(leading_space_level("  매출"), 1)
+        self.assertEqual(leading_space_level("    매출"), 2)
+
+    def test_g5_color_bold_subtotal_and_red_negative(self):
+        """G5: label+bold+arith 교집합(score≥2) → subtotal + 빨강폰트 음수 보정."""
+        from openpyxl.styles import Font
+
+        def build(ws):
+            ws["A1"], ws["B1"] = "항목", "2024"
+            ws["A2"], ws["B2"] = "제품A", 100
+            ws["A3"], ws["B3"] = "제품B", 200
+            ws["A4"], ws["B4"] = "합계", 300          # label+arith(=100+200) → subtotal
+            ws["A4"].font = Font(bold=True)
+            ws["B4"].font = Font(bold=True)
+            ws["A5"], ws["B5"] = "손실", 50           # 빨강폰트 → 음수 보정
+            ws["B5"].font = Font(color="FFFF0000")
+        res = self._ingest_wb(build)
+        rows = {r.entity: r for r in res.tidy_rows}
+        # 합계 = 소계로 분류(label+bold+arith 3신호)
+        self.assertEqual(rows["합계"].row_role, "subtotal")
+        # 빨강폰트 양수 → 음수 보정 + 플래그
+        self.assertEqual(rows["손실"].value, -50)
+        self.assertIn("SIGN_FROM_COLOR", rows["손실"].flags)
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("SIGN_FROM_COLOR", kinds)
+        self.assertIn("SUBTOTAL_DETECTED", kinds)
+
+    def test_g7_footnote_marker_unify(self):
+        """G7: 헤더 각주마커(¹*주N) 제거 → 동일 논리 metric 키 통일."""
+        from fpna.ingest.normalize import strip_footnote_marker
+        self.assertEqual(strip_footnote_marker("매출¹"), ("매출", True))
+        self.assertEqual(strip_footnote_marker("매출*"), ("매출", True))
+        self.assertEqual(strip_footnote_marker("매출(주1)"), ("매출", True))
+        self.assertEqual(strip_footnote_marker("매출"), ("매출", False))
+
+        def build(ws):
+            # 두 표기('영업이익'/'영업이익¹')가 마커 제거 후 같은 metric 으로 통일
+            ws["A1"], ws["B1"], ws["C1"] = "계정", "영업이익¹", "당기순이익"
+            ws["A2"], ws["B2"], ws["C2"] = "회사A", 100, 80
+            ws["A3"], ws["B3"], ws["C3"] = "회사B", 110, 90
+            ws["A4"], ws["B4"], ws["C4"] = "회사C", 120, 95
+        res = self._ingest_wb(build)
+        metrics = {r.metric for r in res.tidy_rows}
+        self.assertIn("영업이익", metrics)            # 마커 제거된 키
+        self.assertNotIn("영업이익¹", metrics)
+
+    def test_g7_dup_key_conflict(self):
+        """G7: 마커 제거가 두 헤더를 같은 키로 붕괴시키면 DUP_KEY smell."""
+        def build(ws):
+            # '매출¹' 과 '매출²' → 둘 다 '매출' 로 붕괴 → 충돌 표면화
+            ws["A1"], ws["B1"], ws["C1"] = "계정", "매출¹", "매출²"
+            ws["A2"], ws["B2"], ws["C2"] = "회사A", 100, 200
+            ws["A3"], ws["B3"], ws["C3"] = "회사B", 110, 210
+            ws["A4"], ws["B4"], ws["C4"] = "회사C", 120, 220
+        res = self._ingest_wb(build)
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("DUP_KEY", kinds)
+
+    def test_g8_repeated_header_dropped(self):
+        """G8: 표 중간 재삽입된 헤더행(첫 헤더와 동일) → 데이터 제외 + 플래그."""
+        def build(ws):
+            ws["A1"], ws["B1"], ws["C1"] = "계정", "2024", "2025"
+            ws["A2"], ws["B2"], ws["C2"] = "매출", 100, 120
+            ws["A3"], ws["B3"], ws["C3"] = "비용", 60, 70
+            # 페이지브레이크로 재삽입된 동일 헤더행(텍스트만, 숫자 없음)
+            ws["A4"], ws["B4"], ws["C4"] = "계정", "2024", "2025"
+            ws["A5"], ws["B5"], ws["C5"] = "이익", 40, 50
+        res = self._ingest_wb(build)
+        # 반복헤더 행(src_row=4)은 데이터로 안 남음
+        src_rows = {r.src_row for r in res.tidy_rows}
+        self.assertNotIn(4, src_rows)
+        # 진짜 데이터(매출/비용/이익)는 보존
+        ents = {r.entity for r in res.tidy_rows}
+        self.assertEqual(ents, {"매출", "비용", "이익"})
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("REPEATED_HEADER_DROPPED", kinds)
+
     def test_fullwidth_and_suffix_normalization(self):
         """전각숫자/NBSP/접미 정규화 — normalize_value_ex 단위 검증."""
         from fpna.ingest.normalize import normalize_value_ex, split_cell_scale

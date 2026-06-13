@@ -336,7 +336,10 @@ def assert_commitment_conserved(rep: QCReport, recognized_cum: float, remaining:
     """R14 약정보존: Σ인식누계 + Σ잔여약정 + 취소 == 계약총액. 과대인식 차단.
 
     레퍼런스(차용): 정부회계 encumbrance 보존(총=소진+미소진+취소) + flow conservation
-    (유입=유출+잔류). 인식누계 > 계약총액 = 리스총액보다 많은 비용화 = 사고 → 차단.
+    (유입=유출+잔류). ★출처(자문 재확인): fund balance 표시·공시는 GASB Statement
+    No.54(2009, "Fund Balance Reporting…"); encumbrance *메커니즘*(encumbrance→
+    expenditure→liquidation)은 단일 Statement 아닌 정부회계 관행 = NCGA Statement 1
+    (1979)/GASB Codification. 인식누계 > 계약총액 = 리스총액보다 많은 비용화 = 사고 → 차단.
     """
     lhs = recognized_cum + remaining + cancelled
     diff = abs(lhs - total)

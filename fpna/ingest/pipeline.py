@@ -30,11 +30,12 @@ import openpyxl
 
 from .cells import as_cells, T_NUMERIC, T_DATE, ERROR_LITERALS
 from .detect import (detect_blocks, cells_in_block, strip_title_rows,
-                     strip_footnote_rows, label_is_subtotal, Block, UNIT_RE)
+                     strip_footnote_rows, strip_repeated_header_rows,
+                     label_is_subtotal, subtotal_signal_score, Block, UNIT_RE)
 from .headers import (unpivot_block, unmerge_fill, LongRow,
                       classify_cells, fill_down_ditto)
 from .normalize import (normalize_value_ex, parse_unit_label, infer_column_type,
-                        scale_for_unit)
+                        scale_for_unit, strip_footnote_marker)
 from .validate import TidyRow, validate_rows, scan_formula_smells, Smell
 
 _PERIOD_RE = re.compile(r"(\d{4}\s*[-/.년]?\s*(\d{1,2})?\s*(월|분기|Q|H)?|\dQ|[1-4]분기|상반기|하반기)",
@@ -146,6 +147,19 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             raw_value = num                 # 환산 전 원본 보존
             value = num * scale
 
+        flags = ""
+        # G5 색 음수: 빨강폰트 양수 → 음수 보정 + SIGN_FROM_COLOR.
+        #   이미 음수표기(괄호/△)면 중복 부호화 금지(_neg 가 True면 건너뜀).
+        if (lr.cell_red and is_num and not _neg
+                and isinstance(value, (int, float)) and value > 0):
+            if raw_value is None:
+                raw_value = value
+            value = -value
+            flags = "SIGN_FROM_COLOR"
+            smells.append(Smell(coord, "SIGN_FROM_COLOR",
+                                "빨강폰트 음수 보정: %s → %s" % (raw_value, value)))
+
+        # G3 계층 레벨: lr.level(indent+선행공백). G5 볼드 신호 보존.
         role = "data"
         label_for_role = " ".join(filter(None, [entity, metric or ""]))
         if label_is_subtotal(label_for_role):
@@ -155,8 +169,11 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             value=value, unit=unit, row_role=role, level=lr.level,
             src_row=lr.row, src_col=lr.col,
             scale_applied=scale, scale_source=scale_source,
-            raw_value=raw_value,
+            raw_value=raw_value, flags=flags,
         ))
+        # 후처리 신호 보관(볼드 → G5 산술 교집합).
+        out[-1]._g5_bold = lr.label_bold        # type: ignore[attr-defined]
+        out[-1]._g5_label = label_for_role       # type: ignore[attr-defined]
 
     # ① 열 단위 셀-스케일 혼재(2종+) → SCALE_HETEROGENEOUS smell
     for col, scs in sorted(col_cell_scales.items()):
@@ -166,7 +183,76 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             smells.append(Smell(
                 "C%d" % col, "SCALE_HETEROGENEOUS",
                 "한 열에 셀 스케일 혼재: %s" % sorted(scs)))
+
+    _apply_subtotal_and_hierarchy(out, smells)
     return out
+
+
+_ARITH_TOL = 1e-6
+
+
+def _apply_subtotal_and_hierarchy(rows: list[TidyRow], smells: list) -> None:
+    """G5 산술 소계 교집합 + G3 부모==Σ자식 검증(후처리, 결정적).
+
+    - G5: (label·bold·arith) 3신호 중 score≥2 → row_role='subtotal'.
+      arith = 같은 (period,metric) 그룹에서 그 행 값 == 나머지 형제 합.
+    - G3: 같은 (period,metric) 그룹에서 부모(level L)가 직후 자식(level>L) 합과
+      일치하면 PARENT_EQ_CHILDREN_SUM 플래그(이중집계 방지 안전망).
+    """
+    def num(r):
+        return r.value if isinstance(r.value, (int, float)) and not isinstance(r.value, bool) else None
+
+    # (period, metric) 그룹 — 같은 열 슬롯에서 형제 비교.
+    groups: dict[tuple, list[TidyRow]] = {}
+    for r in rows:
+        groups.setdefault((r.period, r.metric), []).append(r)
+
+    for _key, grp in groups.items():
+        grp_sorted = sorted(grp, key=lambda r: r.src_row)
+        # --- G5 산술 소계: 후보 == 나머지 형제(소계 아님) 합 ---
+        numeric = [r for r in grp_sorted if num(r) is not None]
+        for r in grp_sorted:
+            v = num(r)
+            bold = getattr(r, "_g5_bold", False)
+            label = getattr(r, "_g5_label", "")
+            arith = False
+            if v is not None and len(numeric) >= 2:
+                # 형제 = 자신 외, 소계 라벨 아닌 나머지 numeric.
+                sibs = [o for o in numeric if o is not r
+                        and not label_is_subtotal(getattr(o, "_g5_label", ""))]
+                if sibs and abs(v - sum(num(o) for o in sibs)) <= _ARITH_TOL * (abs(v) + 1):
+                    arith = True
+            score, _sig = subtotal_signal_score(label, bold=bold, arith_match=arith)
+            if score >= 2:
+                if r.row_role != "subtotal":
+                    r.row_role = "subtotal"
+                if "SUBTOTAL_COLOR_BOLD" not in r.flags:
+                    r.flags = (r.flags + ";SUBTOTAL_COLOR_BOLD").strip(";")
+                    smells.append(Smell(
+                        "R%dC%d" % (r.src_row, r.src_col), "SUBTOTAL_DETECTED",
+                        "소계 신호 score=%d (label=%s bold=%s arith=%s)"
+                        % (score, _sig["label"], bold, arith)))
+
+        # --- G3 부모==Σ자식: level 기반 ---
+        for i, parent in enumerate(grp_sorted):
+            pv = num(parent)
+            if pv is None:
+                continue
+            children = []
+            for child in grp_sorted[i + 1:]:
+                if child.level > parent.level:
+                    if num(child) is not None:
+                        children.append(child)
+                elif child.level <= parent.level:
+                    break  # 같은/상위 레벨 만나면 형제 경계
+            if len(children) >= 2:
+                csum = sum(num(c) for c in children)
+                if abs(pv - csum) <= _ARITH_TOL * (abs(pv) + 1):
+                    parent.flags = (parent.flags + ";PARENT_EQ_CHILDREN_SUM").strip(";")
+                    smells.append(Smell(
+                        "R%dC%d" % (parent.src_row, parent.src_col),
+                        "PARENT_EQ_CHILDREN_SUM",
+                        "부모 %s == Σ자식(%d) — 계층 합 정합" % (pv, len(children))))
 
 
 def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
@@ -225,6 +311,23 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
             filled = fill_down_ditto(bc, ditto_cols, (b2.min_row, b2.max_row))
 
             block_smells: list = []
+
+            # G8 반복헤더: 페이지브레이크로 재삽입된 헤더행(첫 헤더와 동일) 제거.
+            header_rows = list(range(b2.min_row, b2.min_row + max(_top, 1)))
+            bc, dropped_hdr = strip_repeated_header_rows(bc, b2, header_rows)
+            if dropped_hdr:
+                # 격리 후 bbox 재계산
+                rr = [c.row for c in bc]
+                cc = [c.col for c in bc]
+                b2 = Block(min(rr), max(rr), min(cc), max(cc))
+                block_smells.append(Smell(
+                    "R%dC%d" % (header_rows[0], b2.min_col),
+                    "REPEATED_HEADER_DROPPED",
+                    "표 중간 반복헤더 %d행 제거: %s" % (len(dropped_hdr), dropped_hdr)))
+
+            # G7 각주마커 DUP_KEY: 헤더밴드에서 마커 제거 후 같은 키 충돌 탐지.
+            _detect_dup_keys(bc, header_rows, block_smells)
+
             longs = unpivot_block(bc, b2)
             tidy = _map_long_to_tidy(longs, unit, sn, block_smells,
                                      block_scale=block_scale)
@@ -266,6 +369,31 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
     }
     return IngestResult(tidy_rows=kept, schema=schema, smells=all_smells,
                         report=rep, n_blocks=n_blocks)
+
+
+def _detect_dup_keys(block_cells: list, header_rows: list, smells: list) -> None:
+    """G7: 헤더밴드 각주마커 제거 후 동일 행에서 같은 논리키 충돌 → DUP_KEY smell.
+
+    마커 제거 전엔 '매출¹'/'매출²' 로 구별되던 두 열헤더가 같은 '매출' 로 붕괴하면
+    언피벗 시 metric 키가 합쳐져 값이 섞일 위험 → 표면화.
+    """
+    hr = set(header_rows)
+    for r in sorted(hr):
+        seen: dict[str, int] = {}
+        for c in sorted([c for c in block_cells if c.row == r and not c.is_blank],
+                        key=lambda x: x.col):
+            if not isinstance(c.value, str):
+                continue
+            key, stripped = strip_footnote_marker(c.value)
+            if not stripped:
+                continue
+            if key in seen and seen[key] != c.col:
+                smells.append(Smell(
+                    "R%dC%d" % (r, c.col), "DUP_KEY",
+                    "각주마커 제거 후 키 충돌: '%s'(C%d, C%d)"
+                    % (key, seen[key], c.col)))
+            else:
+                seen.setdefault(key, c.col)
 
 
 def asdict_smell(s, sheet) -> dict:

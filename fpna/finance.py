@@ -268,7 +268,10 @@ def depreciation_schedule_ext(acq_cost: float, salvage: float, life_months: int,
 # --------------------------------------------------------------------------- #
 # 정규화 run-rate (A2) — robust 위치추정 × 계절지수 deseasonalize             #
 #   레퍼런스(차용, 코드 미반입): X-13ARIMA-SEATS 계절지수 개념(확인) +        #
-#   Tukey IQR / Hampel(원전 불확실) MAD robust 위치추정. 산식만 차용.         #
+#   Tukey IQR / Hampel MAD robust 위치추정. 산식만 차용.                       #
+#   ★Hampel(1974) "The Influence Curve and Its Role in Robust Estimation",    #
+#   JASA 69:383-393 기반 MAD 규칙(확인). 단 "Hampel identifier"라는 명명의    #
+#   원전은 미확정 — 명명 출처 확정 인용 금지(MAD robust σ 산식만 차용).        #
 #   핵심: one-off(단발 대형계상)를 robust mask 로 제외 후, 활성월(active)      #
 #   기준 factor 로 연환산 — 12 하드코딩 금지(부분기간 이중연환산 방지).        #
 # --------------------------------------------------------------------------- #
@@ -282,9 +285,10 @@ def _median(xs: list[float]) -> float:
 
 
 def median_abs_deviation(xs: list[float], *, scale: float = 1.4826) -> float:
-    """MAD = median(|x - median(x)|) × scale. scale=1.4826 → 정규분포 σ 일치(Hampel).
+    """MAD = median(|x - median(x)|) × scale. scale=1.4826 → 정규분포 σ 일치.
 
-    (Hampel 원전 연도 불확실 — robust σ 추정 산식만 차용.)
+    Hampel(1974) JASA 69:383-393 기반 MAD 규칙. "Hampel identifier" 명명의 원전은
+    미확정 — robust σ 추정 산식만 차용(명명 출처 확정 인용 금지).
     """
     if not xs:
         return 0.0
@@ -402,8 +406,11 @@ def normalized_run_rate(series: list[float], *, season_len: int = 12,
 # --------------------------------------------------------------------------- #
 # LMDI variance decomposition (A4/⑤) — rate + volume, 잔차=0                  #
 #   레퍼런스(차용): Horngren rate/volume variance(확인) + LMDI                #
-#   (Ang 2005 Energy Policy 확인; 음수보정 Ang&Liu 2007 확인). 로그평균       #
-#   가중으로 완전분해(residual≡0). 음수/0 은 산술 fallback(decomp_undefined).  #
+#   (Ang 2005 Energy Policy 확인; 음수/0 처리 Ang&Liu 2007 확인). 로그평균    #
+#   가중으로 완전분해(residual≡0).                                            #
+#   ★0/음수 분기(자문 재확인): 순수 0 은 1e-20 로 치환하면 로그평균이 극한    #
+#   수렴해 분해 가능(0 통째 flag 는 과보수). 음수만 로그 미정의 → 산술        #
+#   fallback(decomp_undefined). C0,C1>0 보장 후 LMDI, 0 포함시 small-ε 치환.   #
 # --------------------------------------------------------------------------- #
 def _log_mean(a: float, b: float) -> float:
     """로그평균 L(a,b) = (a-b)/(ln a - ln b). a==b 면 a. a,b>0 전제."""
@@ -412,13 +419,18 @@ def _log_mean(a: float, b: float) -> float:
     return (a - b) / (math.log(a) - math.log(b))
 
 
+# LMDI 0 치환용 small-ε (Ang&Liu 2007: 순수 0 은 작은 양수로 치환 시 로그평균 극한 수렴).
+_LMDI_EPS = 1e-20
+
+
 @dataclass
 class LmdiResult:
     rate_effect: float       # 단가(P) 효과
     volume_effect: float     # 수량(Q) 효과
     total: float             # P1Q1 - P0Q0 (검증 대상)
     residual: float          # total - (rate+volume) — LMDI 면 ≈0
-    undefined: bool = False  # 음수/0 으로 로그평균 불가 → 산술 fallback 사용
+    undefined: bool = False  # 음수로 로그평균 불가 → 산술 fallback 사용
+    zero_substituted: bool = False  # 순수 0 을 ε 치환해 분해(Ang&Liu 2007)
 
 
 def variance_decomp_lmdi(p0: float, q0: float, p1: float, q1: float) -> LmdiResult:
@@ -429,24 +441,37 @@ def variance_decomp_lmdi(p0: float, q0: float, p1: float, q1: float) -> LmdiResu
       volume_effect = L(C1,C0) · ln(Q1/Q0)
       rate + volume == C1 - C0 (residual ≡ 0, 항등).
 
-    C0=P0Q0 또는 C1=P1Q1 ≤ 0 (또는 P/Q ≤ 0) 면 로그 미정의 → 산술 fallback:
-      rate=(P1-P0)·Q1,  volume=P0·(Q1-Q0)  (Horngren, 잔차는 mix 로 흡수되며 0 아닐 수 있음).
-      이때 undefined=True flag (decomp_undefined).
+    0/음수 분기(자문 재확인 — Ang&Liu 2007):
+      - 순수 0 (P/Q/C 중 0 이 있고 음수는 없음): 0 → 1e-20 치환 시 로그평균이
+        극한 수렴해 분해 가능. zero_substituted=True flag. (0 통째 undefined 는 과보수.)
+      - 음수 (P/Q/C 중 하나라도 < 0): 로그 미정의 → Horngren 산술 fallback:
+          rate=(P1-P0)·Q1,  volume=P0·(Q1-Q0)  (잔차는 mix 로 흡수되며 0 아닐 수 있음).
+        undefined=True flag (decomp_undefined).
     """
     c0, c1 = p0 * q0, p1 * q1
     total = c1 - c0
-    # 로그평균 정의역: C0,C1>0 & P0,P1>0 & Q0,Q1>0
-    if min(c0, c1, p0, p1, q0, q1) > 0:
-        L = _log_mean(c1, c0)
-        rate = L * math.log(p1 / p0)
-        vol = L * math.log(q1 / q0)
+    vals = (c0, c1, p0, p1, q0, q1)
+    # 음수가 하나라도 있으면 로그 미정의 → Horngren 산술 fallback (decomp_undefined)
+    if min(vals) < 0:
+        rate = (p1 - p0) * q1
+        vol = p0 * (q1 - q0)
         resid = total - (rate + vol)
-        return LmdiResult(rate, vol, total, resid, undefined=False)
-    # fallback (Horngren) — 음수/0 보호
-    rate = (p1 - p0) * q1
-    vol = p0 * (q1 - q0)
+        return LmdiResult(rate, vol, total, resid, undefined=True)
+    # 음수 없음. 순수 0 은 ε 치환해 로그평균 극한 수렴 → 분해 가능.
+    has_zero = min(vals) == 0
+    pe0 = p0 if p0 > 0 else _LMDI_EPS
+    pe1 = p1 if p1 > 0 else _LMDI_EPS
+    qe0 = q0 if q0 > 0 else _LMDI_EPS
+    qe1 = q1 if q1 > 0 else _LMDI_EPS
+    ce0 = pe0 * qe0
+    ce1 = pe1 * qe1
+    L = _log_mean(ce1, ce0)
+    rate = L * math.log(pe1 / pe0)
+    vol = L * math.log(qe1 / qe0)
+    # 잔차는 *실제* total(0 치환 전 ΔC) 기준으로 보고 (tie-out 정직성).
     resid = total - (rate + vol)
-    return LmdiResult(rate, vol, total, resid, undefined=True)
+    return LmdiResult(rate, vol, total, resid, undefined=False,
+                      zero_substituted=has_zero)
 
 
 # --------------------------------------------------------------------------- #

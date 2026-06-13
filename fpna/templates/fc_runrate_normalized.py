@@ -9,6 +9,8 @@ fpna.templates.fc_runrate_normalized — 고정비: 정규화 run-rate / 연환�
 - 불변식: normalized = actual − Σone_off (tie, R3). annualized = monthly × factor
   (12 하드코딩 금지 — active_months 기준 월런레이트의 연환산, 이중연환산 방지).
 - one-off 마스킹은 fpna.finance.normalized_run_rate(robust_mask × seasonal).
+  레퍼런스(차용): X-13ARIMA-SEATS 계절지수 개념 + Hampel(1974) JASA 69:383-393
+  기반 MAD 규칙 + Tukey IQR fence(산식만 차용; "Hampel identifier" 명명 출처는 미확정).
 - raw vs normalized 병기(자문 ③) + over_masking flag(soft).
 """
 from __future__ import annotations

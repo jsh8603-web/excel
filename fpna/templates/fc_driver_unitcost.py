@@ -8,6 +8,8 @@ fpna.templates.fc_driver_unitcost — 고정비: 활동 동인 단가 (A4).
 - 불변식: unit_cost = cost/qty (qty>0). 단위정합 선언. qty 결측/0 → NA(R17).
   ⛔ unit_cost 열 합산 금지 → blended = Σcost / Σqty (단가의 평균이 아니라 가중).
 - R17: 0/음수 qty → RATIO_NA(ZERO_DENOM), 단위 혼재(㎡ vs sqft) → UNIT_MISMATCH.
+  레퍼런스(차용): Great Expectations expect_column_values 어휘(미설치, stdlib 재구현)
+  + 회계 비율 규율(0/inf 박제 금지, NA 사유 enum 노출).
 """
 from __future__ import annotations
 

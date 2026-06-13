@@ -69,6 +69,55 @@ def _normalize_digits(s: str) -> str:
     return s
 
 
+# --------------------------------------------------------------------------
+# G7 각주마커 제거 — 헤더의 ¹ * 주1) 등 → 동일 논리열 키 통일.
+# 위첨자 숫자(¹²³…), 별표(*†‡§), 끝부분 (주N)/주N) 패턴을 제거.
+# --------------------------------------------------------------------------
+_SUPERSCRIPT = "¹²³⁴⁵⁶⁷⁸⁹⁰"
+# 끝의 각주 마커: 위첨자/별표 군집, 또는 (주1)·주1)·(1)·*1 류 꼬리표.
+_FOOTNOTE_TAIL_RE = re.compile(
+    r"(?:"
+    r"[¹²³⁰-₟\*†‡§]+"   # 위첨자/별표/단검표
+    r"|\s*\(?\s*주\s*\d+\s*\)?"                                  # (주1)/주1)
+    r"|\s*\(\s*\d{1,2}\s*\)"                                     # (1)
+    r"|\s*\*\d{1,2}"                                             # *1
+    r")\s*$"
+)
+
+
+def strip_footnote_marker(text):
+    """헤더 텍스트 끝의 각주 마커를 제거해 논리 키를 통일.
+
+    G7: '매출¹' / '매출*' / '매출(주1)' → '매출'.
+    반환: (정리키, 제거여부). 문자열 아니면 (원본, False).
+    숫자만 남거나 빈 문자열이 되면(예: 마커가 본문이던 경우) 원본 유지.
+    """
+    if not isinstance(text, str):
+        return text, False
+    s = text.strip()
+    cleaned = _FOOTNOTE_TAIL_RE.sub("", s).strip()
+    if cleaned and cleaned != s:
+        return cleaned, True
+    return s, False
+
+
+# --------------------------------------------------------------------------
+# G3 들여쓰기 계층 — 선행공백 → 레벨(2칸=1레벨).
+# openpyxl alignment.indent 와 합산해 라벨 계층 깊이 산출.
+# --------------------------------------------------------------------------
+def leading_space_level(text, *, spaces_per_level: int = 2) -> int:
+    """라벨 앞 선행공백(NBSP 포함)을 레벨로 환산. 2칸=1레벨(내림)."""
+    if not isinstance(text, str):
+        return 0
+    n = 0
+    for ch in text:
+        if ch in (" ", "\t", " ", "　"):
+            n += 1 + (3 if ch in ("\t", "　") else 0)  # tab/전각공백=4칸 가중
+        else:
+            break
+    return n // spaces_per_level
+
+
 
 def scale_from_number_format(fmt: str | None) -> int:
     """number_format 의 trailing comma 로 스케일 추정.
@@ -253,4 +302,5 @@ __all__ = [
     "parse_unit_label", "scale_for_unit", "split_cell_scale",
     "normalize_value", "normalize_value_ex", "scale_factor",
     "regex_type", "infer_column_type",
+    "strip_footnote_marker", "leading_space_level",
 ]

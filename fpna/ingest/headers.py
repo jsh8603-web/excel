@@ -217,6 +217,10 @@ class LongRow:
     unit: str | None = None
     is_subtotal: bool = False
     level: int = 0
+    # G3/G5 신호(결정적). 가장 안쪽 행라벨 셀에서 수집.
+    label_bold: bool = False          # 행라벨 폰트 볼드(소계 신호)
+    label_indent: int = 0             # alignment.indent + 선행공백 환산 레벨(계층)
+    cell_red: bool = False            # 데이터 셀 빨강폰트(색 음수 신호)
 
 
 def unpivot_block(block_cells: list[Cell], b: Block, *,
@@ -234,6 +238,8 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
     headers_row = [c for c in block_cells if c.cls == LABEL and c.col <= b.min_col + left_cols - 1]
     data_cells = [c for c in block_cells if c.cls == DATA]
 
+    from .normalize import leading_space_level, strip_footnote_marker
+
     out: list[LongRow] = []
     for d in data_cells:
         attrs: dict = {}
@@ -245,9 +251,14 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
             h = nearest_header(d, band, "up-left")
             name = (col_header_names[i] if col_header_names and i < len(col_header_names)
                     else "hdr_c%d" % i)
-            attrs[name] = h.value if h else None
+            # G7: 열헤더 각주마커 제거 → 동일 논리열 키 통일.
+            hv = h.value if h else None
+            if isinstance(hv, str):
+                hv, _ = strip_footnote_marker(hv)
+            attrs[name] = hv
         # 행헤더 레벨(왼쪽에서 오른쪽으로 여러 열)
         row_levels = sorted({h.col for h in headers_row})
+        inner_label = None     # 가장 안쪽(오른쪽) 행라벨 셀
         for i, hc in enumerate(row_levels):
             band = [h for h in headers_row if h.col == hc]
             h = nearest_header(d, band, "left-up")
@@ -256,7 +267,21 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
             attrs[name] = h.value if h else None
             if h is not None:
                 level = max(level, h.fmt.indent)
-        out.append(LongRow(value=d.value, attrs=attrs, row=d.row, col=d.col, level=level))
+                inner_label = h
+        # G3: 가장 안쪽 라벨의 indent + 선행공백 → 계층 레벨.
+        # G5: 라벨 볼드 / 데이터 셀 빨강폰트 신호.
+        label_bold = False
+        label_indent = 0
+        if inner_label is not None:
+            label_bold = bool(inner_label.fmt.bold)
+            sp_level = leading_space_level(inner_label.value)
+            label_indent = inner_label.fmt.indent + sp_level
+            level = max(level, label_indent)
+        cell_red = bool(d.fmt.font_color and str(d.fmt.font_color).upper()[-6:]
+                        in ("FF0000", "C00000"))
+        out.append(LongRow(value=d.value, attrs=attrs, row=d.row, col=d.col,
+                           level=level, label_bold=label_bold,
+                           label_indent=label_indent, cell_red=cell_red))
     return out
 
 

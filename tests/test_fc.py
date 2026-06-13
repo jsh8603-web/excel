@@ -311,9 +311,27 @@ class TestNewMeasures(unittest.TestCase):
         self.assertAlmostEqual(d.residual, 0.0, places=9)   # 완전분해 잔차 0
         self.assertAlmostEqual(d.rate_effect + d.volume_effect, d.total, places=9)
 
-    def test_lmdi_undefined_fallback(self):
-        d = finance.variance_decomp_lmdi(10, 0, 12, 80)     # 0 수량 → 로그 미정의
+    def test_lmdi_zero_decomposes_via_eps(self):
+        """순수 0 은 ε 치환으로 분해 가능(자문: 0 통째 flag 는 과보수).
+
+        q0=0 → C0=0. 0 을 1e-20 로 치환하면 로그평균 극한 수렴 → undefined=False,
+        zero_substituted=True. rate+volume 이 (ε 치환) C1-C0 를 완전분해(잔차≈0).
+        """
+        d = finance.variance_decomp_lmdi(10, 0, 12, 80)     # q0=0 → C0=0
+        self.assertFalse(d.undefined)                       # 음수 아님 → 미정의 아님
+        self.assertTrue(d.zero_substituted)                 # ε 치환으로 분해
+        self.assertAlmostEqual(d.total, 12 * 80 - 0.0)      # 실제 ΔC = 960
+        # ε 치환 분해의 잔차는 미세(ε→0 극한). rate+volume ≈ ε-치환 C1-C0 ≈ total.
+        self.assertAlmostEqual(d.rate_effect + d.volume_effect, d.total, places=6)
+
+    def test_lmdi_negative_undefined_fallback(self):
+        """음수는 로그 미정의 → Horngren 산술 fallback(decomp_undefined)."""
+        d = finance.variance_decomp_lmdi(10, 100, -12, 80)  # p1<0 → 로그 미정의
         self.assertTrue(d.undefined)                        # decomp_undefined flag
+        self.assertFalse(d.zero_substituted)
+        # Horngren: rate=(p1-p0)·q1, volume=p0·(q1-q0)
+        self.assertAlmostEqual(d.rate_effect, (-12 - 10) * 80)
+        self.assertAlmostEqual(d.volume_effect, 10 * (80 - 100))
 
     def test_stickiness_asymmetry(self):
         # 활동 하락 시 비용 덜 줄어듦 → up_elas > down_elas (sticky)

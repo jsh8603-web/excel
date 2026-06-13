@@ -6,7 +6,10 @@ fpna.templates.fc_cuttability_ladder — 고정비: 절감 가능성 사다리 (
 
 - grain = "1행 = 1 약정(Contract)".
 - 등급(rung)은 dims.cuttability_rung — **Contract 속성(약정·만기·notice)이 主**.
+  레퍼런스(차용): Horngren committed↔discretionary + ZBB Pyhrr(HBR 1970 Nov-Dec, 확인)
+  decision-package. 함정 회피 근거 = ABJ 2003 JAR 41(1):47-63(확인).
   stickiness(ABJ 비대칭)는 ⛔ 단일신호 금지 — 보조 메모로만 부착(등급 안 바꿈).
+  ⛔ stickiness 는 집계 추정치 → 라인 단위 인과 해석 금지(ecological fallacy).
 - 불변식: earliest_exit = max(report+notice, break) (dims 가 계산), time-to-exit
   단조 정렬, Σ티어별 연환산 == Σ전체 연환산(R3 tie).
 - 엣지: notice 미정의 → locked(committed), penalty>절감 → net 음수 표기.

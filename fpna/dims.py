@@ -291,9 +291,14 @@ def expected_presence(contract: Contract, periods: list) -> set:
 
 # --------------------------------------------------------------------------- #
 # Cuttability rung (A3) — time-to-exit 등급. Contract 속성이 主.              #
-#   레퍼런스(차용): Horngren committed↔discretionary 스펙트럼 + ZBB Pyhrr     #
-#   (연도 불확실) decision-package 개념. ⛔ 단일신호(stickiness)만으로 판정     #
-#   금지 — 등급은 계약 속성(약정·만기·notice)이 主, stickiness 는 보조 modulate. #
+#   레퍼런스(차용): Horngren committed↔discretionary 스펙트럼 + ZBB           #
+#   Pyhrr decision-package 개념(확인: Peter A. Pyhrr, HBR 1970 Nov-Dec;       #
+#   단행본 Wiley 1973). cuttability 함정 회피 근거 = Anderson-Banker-          #
+#   Janakiraman(ABJ) 2003 JAR 41(1):47-63(확인).                              #
+#   ⛔ 단일신호(stickiness)만으로 판정 금지 — 등급은 계약 속성(약정·만기·      #
+#   notice)이 主, stickiness 는 보조 modulate.                                #
+#   ⛔ stickiness 함정: 집계 추정치라 라인 단위 인과로 해석 금지(ecological    #
+#   fallacy 위험). 등급의 主 는 Contract 속성(만기·notice·status)이다.        #
 # --------------------------------------------------------------------------- #
 CUTTABILITY_RUNGS: tuple[str, ...] = (
     "committed",          # 약정으로 잠김 — 해지 전 불가(리스·장기 유지보수)
@@ -339,8 +344,9 @@ def cuttability_rung(contract: "Contract", *, as_of: _dt.date,
       - exit_m ≤ locked         → contractual_locked
       - else                    → committed (장기 약정)
 
-    보조(modulate, ⛔ 단일신호 금지): stickiness(ABJ 비대칭)는 등급을 *바꾸지 않고*
-    confidence/메모로만 부착. 높은 stickiness = "절감해도 잘 안 줄어든다" 경고 신호.
+    보조(modulate, ⛔ 단일신호 금지): stickiness(ABJ 2003 비대칭)는 등급을 *바꾸지
+    않고* confidence/메모로만 부착. 높은 stickiness = "절감해도 잘 안 줄어든다" 경고.
+    ⛔ stickiness 는 집계 추정치 — 라인 단위 인과로 해석 금지(ecological fallacy).
 
     반환 dict: rung / earliest_exit_m / drivers(판정 근거 list) / stickiness_note.
     """
