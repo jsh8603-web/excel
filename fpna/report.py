@@ -35,6 +35,41 @@ TAB_COLORS = {
 
 
 @dataclass
+class DimContext:
+    """정규 차원(conformed dimension) — 오케스트레이터가 소유해 시트에 하향주입.
+
+    시트들이 grain 을 독립정의하면 조인키가 어긋난다(자문 R2). build_report 가
+    sheets 의 grain 합집합으로 이 컨텍스트를 구성해 각 builder 에 ctx 로 주입하면,
+    시트들이 "같은 축 정의"를 공유한다. 빈 축 = 차원 미선언(패스스루와 동일 자유도).
+
+    periods  : 기간 축 키(예: ("2024-01", "2024-02")).
+    accounts : 계정 축 키.
+    entities : 엔티티 축 키.
+    """
+    periods: tuple = ()
+    accounts: tuple = ()
+    entities: tuple = ()
+
+    @classmethod
+    def from_spec(cls, spec) -> "DimContext":
+        """ReportSpec.sheets 의 grain 축 *키*를 합집합으로 모아 DimContext 구성.
+
+        SheetSpec.grain 은 {축: (값,...)} 매핑. 알려진 축(periods/accounts/entities)
+        키만 합집합(정렬·중복제거)으로 누적한다. grain 미선언 시트는 기여 0 →
+        빈 축이면 차원 미강제(하위호환)."""
+        acc: dict[str, set] = {"periods": set(), "accounts": set(), "entities": set()}
+        for s in getattr(spec, "sheets", []) or []:
+            grain = getattr(s, "grain", None) or {}
+            for axis in acc:
+                vals = grain.get(axis)
+                if vals:
+                    acc[axis].update(vals)
+        return cls(periods=tuple(sorted(acc["periods"])),
+                   accounts=tuple(sorted(acc["accounts"])),
+                   entities=tuple(sorted(acc["entities"])))
+
+
+@dataclass
 class SheetSpec:
     """1개 시트 선언.
 
@@ -42,11 +77,16 @@ class SheetSpec:
     builder : (ws, ctx) -> dict[str,float] facts. ws 에 직접 작성, 크로스tie용 facts 반환.
     section : TAB_COLORS 키(탭색·순서 힌트).
     title   : 목차/표지 표시 제목(없으면 name).
+    grain   : {축: (값,...)} 시트 차원 선언(예: {"accounts": ("6010","6020")}).
+              build_report 가 DimContext(합집합) 구성에 쓰고, qc_report 가 크로스tie
+              시트 간 grain 정합(축 키 공유)을 1차 검증한다. 미선언(빈 dict)이면
+              차원 무강제(하위호환).
     """
     name: str
     builder: Callable
     section: str = "detail"
     title: str = ""
+    grain: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -81,6 +121,9 @@ def build_report(spec: ReportSpec, ctx=None) -> openpyxl.Workbook:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)                      # 기본 빈 시트 제거
 
+    if ctx is None:                           # R4: 패스스루 stub 탈피 — 정규 차원 하향주입
+        ctx = DimContext.from_spec(spec)     # sheets grain 합집합(없으면 빈 축)
+
     titles = _resolve_titles(spec)           # s.name → 31자·유일 시트 제목(충돌 dedup)
     facts: dict = {}
     for s in spec.sheets:
@@ -97,7 +140,7 @@ def build_report(spec: ReportSpec, ctx=None) -> openpyxl.Workbook:
     _reorder(wb, spec, titles)
 
     wb.calculation.fullCalcOnLoad = True       # artifact-gap 완화(B도 스파인과 동일 규율)
-    wb._fpna_meta = {"facts": facts, "flat": flat, "titles": titles}
+    wb._fpna_meta = {"facts": facts, "flat": flat, "titles": titles, "dim_ctx": ctx}
     return wb
 
 
@@ -192,10 +235,32 @@ def _reorder(wb, spec, titles) -> None:
     wb.active = 0
 
 
+def _grain_conflict(spec) -> str:
+    """크로스tie 에 쓰이는 시트들이 호환 grain(같은 축 키 공유)인지 1차 검증.
+
+    가벼운 게이트(과설계 금지): 두 시트가 *같은 축*에 grain 을 선언했는데 그 축의
+    키 교집합이 비면 조인 불가 → 불일치. cross_specs 가 참조하는 시트만 대상으로 하되,
+    raw_sum_fn(lambda)은 introspect 불가하므로 grain 을 선언한 모든 시트쌍을 본다.
+    축 미선언/단일 시트면 항상 호환(빈 문자열=정합)."""
+    graned = [s for s in (getattr(spec, "sheets", []) or [])
+              if getattr(s, "grain", None)]
+    for i in range(len(graned)):
+        for j in range(i + 1, len(graned)):
+            ga, gb = graned[i].grain, graned[j].grain
+            for axis in set(ga) & set(gb):           # 공통 축만
+                ka, kb = set(ga.get(axis) or ()), set(gb.get(axis) or ())
+                if ka and kb and not (ka & kb):      # 둘 다 키 있는데 교집합 0
+                    return "시트간 grain 불일치: '%s'↔'%s' 축 %s 키 공유 0" % (
+                        graned[i].name, graned[j].name, axis)
+    return ""
+
+
 def qc_report(wb, spec: ReportSpec) -> QCReport:
-    """리포트 QC — 수식에러 0 + 크로스시트 tie(메모리값). 스파인이 호출."""
+    """리포트 QC — 수식에러 0 + 크로스시트 tie(메모리값) + grain 정합. 스파인이 호출."""
     rep = QCReport("report:" + spec.title)
     qc_no_formula_errors(wb, rep)
+    conflict = _grain_conflict(spec)              # R4: 시트간 grain 1차 정합
+    rep.add("grain 정합", not conflict, conflict)
     flat = (getattr(wb, "_fpna_meta", None) or {}).get("flat", {})   # build_report 외 경로 방어
     for name, lhs, rhs, tol in eval_specs(spec.cross_specs, flat, flat):
         if lhs is None or rhs is None:
@@ -207,4 +272,5 @@ def qc_report(wb, spec: ReportSpec) -> QCReport:
     return rep
 
 
-__all__ = ["SheetSpec", "ReportSpec", "build_report", "qc_report", "TAB_COLORS"]
+__all__ = ["SheetSpec", "ReportSpec", "DimContext", "build_report", "qc_report",
+           "TAB_COLORS"]

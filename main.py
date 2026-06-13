@@ -11,6 +11,7 @@ main.py — FP&A Excel 시스템 단일 진입점.
   py main.py encrypt <평문> [out] [--pass X] # 텍스트 대칭암호화(ChaCha20-Poly1305+scrypt) → armored
   py main.py decrypt <암호문> [out] [--pass X] # 복호화(passphrase 오답·변조 시 거부)
   py main.py dispatch "<요청 텍스트>"        # 어느 템플릿을 쓸지 판정
+  py main.py report <name> [out.xlsx]       # 다중시트 제본(보드팩) — 크로스시트 tie QC 게이트
   py main.py render <type> [out.xlsx]       # 골든샘플로 템플릿 렌더(QC 게이트)
   py main.py golden [type]                  # 골든샘플 빌드+QC (type 생략 시 전부)
   py main.py list                           # 구현된 템플릿 유형
@@ -219,6 +220,38 @@ def cmd_render(args):
     return 0 if res.saved else 1
 
 
+def cmd_report(args):
+    """다중시트 제본(B 실행경로): 레지스트리 make_spec → build_report → qc_report → 통과 시만 저장.
+
+    사용: py main.py report <name> [out.xlsx]
+    """
+    from fpna.reports import get_report, available
+    from fpna.report import build_report, qc_report
+    if not args:
+        _print("사용: py main.py report <name> [out.xlsx]")
+        _print("가능: %s" % ", ".join(available())); return 2
+    name = args[0]
+    out = args[1] if len(args) > 1 else "out/%s.xlsx" % name
+    try:
+        mod = get_report(name)
+    except KeyError as e:
+        _print(str(e)); return 2
+    spec = mod.make_spec()
+    wb = build_report(spec)                        # fullCalcOnLoad 부여(build_report 내부)
+    rep = qc_report(wb, spec)
+    _print(rep.summary())
+    if rep.passed:
+        import os
+        d = os.path.dirname(out)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        wb.save(out)
+        _print("저장: %s  (시트 %d개)" % (out, len(wb.worksheets)))
+        return 0
+    _print("QC 미통과(크로스시트 tie/grain) → 저장 보류")
+    return 1
+
+
 def cmd_golden(args):
     from fpna.templates import available
     from fpna.render import render_golden
@@ -254,8 +287,8 @@ def cmd_selftest(_args):
 _COMMANDS = {
     "list": cmd_list, "ingest": cmd_ingest, "profile": cmd_profile,
     "encrypt": cmd_encrypt, "decrypt": cmd_decrypt,
-    "dispatch": cmd_dispatch, "render": cmd_render, "golden": cmd_golden,
-    "selftest": cmd_selftest,
+    "dispatch": cmd_dispatch, "report": cmd_report, "render": cmd_render,
+    "golden": cmd_golden, "selftest": cmd_selftest,
 }
 
 

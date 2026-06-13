@@ -137,10 +137,12 @@ def dispatch(request_text: str = "", *, columns: list[str] | None = None,
 # 단계(stage) 라우팅 — "지금 파이프라인 어느 단계인가" 선행 판정                #
 #   dispatch() 는 분석표 템플릿 28종을 고를 뿐 "더러운 엑셀이냐/운반이냐"는      #
 #   판정하지 않는다. classify_stage 가 그 앞단을 책임진다.                       #
-#   stage ∈ {ingest, profile, transport, analysis}.                            #
+#   stage ∈ {ingest, profile, transport, report, analysis}.                            #
 # --------------------------------------------------------------------------- #
 # (stage, [키워드정규식]) — 위에서부터 우선. analysis 는 fall-through 기본값.
 _STAGE_RULES = [
+    ("report", [r"보드\s*팩", r"보드팩", r"제본", r"다중\s*시트", r"board\s*pack",
+                r"\bpack\b", r"워크페이퍼", r"workpaper", r"크로스\s*시트", r"제본\s*보고"]),
     ("transport", [r"암호화", r"복호화", r"encrypt", r"decrypt", r"메일\s*본문",
                    r"메일로\s*보", r"운반", r"전송", r"반출.*텍스트", r"본문에\s*붙여"]),
     ("profile", [r"스키마", r"shape", r"프로파일", r"차원\s*없", r"형태만",
@@ -155,6 +157,7 @@ _STAGE_COMMAND = {
     "ingest": "py main.py ingest <파일.xlsx> out/ingest",
     "profile": "py main.py profile <마트.csv> out/profile_spec.yaml",
     "transport": "py main.py encrypt <평문.txt> --mail   (받는 쪽: py main.py decrypt <암호문>)",
+    "report": "py main.py report fc_boardpack out/pack.xlsx",
     "analysis": "py main.py dispatch \"<요청>\"  →  py main.py render <type> out/<type>.xlsx",
 }
 
@@ -163,7 +166,7 @@ def classify_stage(request_text: str = "", *, has_messy_file: bool = False,
                    has_clean_table: bool = False) -> tuple[str, str]:
     """요청을 파이프라인 단계로 선분류한다.
 
-    반환 = (stage, next_command). stage ∈ {ingest, profile, transport, analysis}.
+    반환 = (stage, next_command). stage ∈ {ingest, profile, transport, report, analysis}.
     텍스트 키워드를 우선 판정하고, 파일 단서(messy/clean)로 보강한다.
     analysis 는 기본값 — 단계 키워드가 없으면 분석표 요청으로 본다(→ dispatch 가 템플릿 판정).
     """
