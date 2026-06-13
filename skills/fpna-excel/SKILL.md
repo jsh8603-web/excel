@@ -138,7 +138,7 @@ py -S main.py selftest                               # 무설치 재현(site-pac
 ## 6. 워크플로 (회사 ↔ 집)
 
 1. **회사 → 집**: 구조 메타(컬럼/시트/포맷/규모)·에러 메시지만 텍스트로. 실데이터 숫자 반출 금지.
-2. **집**: ingest 로 구조 검증 → 템플릿 데이터 바인딩 → 골든+QC 검증 → `tools/verify_xlsx.py`(집-전용 Excel COM).
+2. **검증**: ingest 로 구조 검증 → 템플릿 데이터 바인딩 → 골든+QC 검증 → `tools/verify_xlsx.py`(Excel COM·pywin32 있으면 회사서도 산출물 검증 가능).
 3. **집 → 회사**: 코드/수식/런북(텍스트). 회사에서 실데이터로 render, 결과는 회사 PC 마무리.
 
 ## 7. 제약 (반드시 준수)
@@ -146,7 +146,7 @@ py -S main.py selftest                               # 무설치 재현(site-pac
 - openpyxl 외 런타임 라이브러리 금지(pandas/numpy/pydantic/XlsxWriter/formulas/dbt/GE). stdlib + dataclass 직접 구현.
 - 중간데이터 csv/json(stdlib)만. 차트는 openpyxl(워터폴=stacked-bar+투명 base).
 - 합성 재무수치 금지(구조 골든 더미만 예외 — 명시). **QC 통과 후 출력 확정.**
-- COM/xlwings/MCP는 집-전용 검증(`tools/`). 회사 런타임 의존 아님.
+- COM/xlwings/MCP는 검증 보조(`tools/`, pywin32 필요). 런타임 의존 아님(회사/집 무관 — 본질은 "런타임 비의존").
 
 ## 8. 관련 문서
 

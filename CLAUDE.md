@@ -18,7 +18,7 @@
 - **중간 데이터 = csv/json(stdlib)만.** parquet 등 컴파일 의존 금지. 차트는 openpyxl(워터폴=stacked-bar+투명 base).
 - **모든 진입점은 `import fpna._bootstrap`을 최우선**으로 한다(vendor/를 sys.path에 주입). 이게 빠지면 회사 PC에서 ImportError.
 - **합성 재무수치 금지**(테스트 *구조* 픽스처는 예외 — 의미 없는 더미임을 명시). PIT 규율. **출력은 QC 통과 후에만 확정.**
-- **COM/xlwings/Excel MCP는 집-전용 검증 도구**(`tools/`)다. ⛔ 회사 런타임 코드(`fpna/`, `main.py`)가 이것들에 의존하면 안 된다.
+- **COM/xlwings/Excel MCP는 검증 보조 도구**(`tools/`)다 — pywin32+Excel 있으면 회사/집 무관하게 쓸 수 있다(Python312 site-packages 에 pywin32 포함된 환경이면 회사에서도 산출물 COM 검증 가능). ⛔ 단 **런타임 코드**(`fpna/`, `main.py`)는 절대 이것들에 의존하면 안 된다 — pywin32 는 `.pyd` 컴파일 산물이라 `vendor/` 동봉 불가 → `py -S`(site-packages 차단) 무설치 검증이 깨진다. "집-전용"이 아니라 "런타임 비의존"이 제약의 본질.
 
 ## 2. 실행·검증 (작업 후 반드시)
 
@@ -40,7 +40,7 @@ py -S main.py selftest       # -S = site-packages 차단 → vendor/ 동봉본�
 ```
 홈 site-packages에도 openpyxl이 있으므로 `-S` 없이는 vendor 검증이 무의미하다.
 
-**실제 Excel 검증(집-전용, 권장)**: `py tools/verify_xlsx.py out\x.xlsx`
+**실제 Excel 검증(pywin32+Excel 필요, 권장)**: `py tools/verify_xlsx.py out\x.xlsx`
 → 진짜 Excel로 전체 재계산해 ①에러셀 0 ②NPV/IRR 등 셀 수식이 `fpna.finance`와 일치하는지 확인.
 
 ### 환경 메모 (홈 PC)

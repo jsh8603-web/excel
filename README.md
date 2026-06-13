@@ -25,7 +25,7 @@ py main.py list                                       # 구현된 템플릿 유�
 - **pandas/numpy/pydantic/XlsxWriter/formulas 금지.** 표 변환·검증·재무계산은 표준 라이브러리 + `dataclass`로 직접 구현.
 - 중간데이터는 **csv/json(stdlib)**. parquet 금지. 차트는 openpyxl(워터폴 = stacked-bar + 투명 base 트릭).
 - 합성데이터 금지(재무 수치), PIT 규율, 출력은 **QC 통과 후 확정**.
-- COM/xlwings/Excel MCP 등은 **집-전용 검증**일 뿐 회사 런타임 의존이 아니다(`tools/` 격리).
+- COM/xlwings/Excel MCP 등은 **검증 보조**(pywin32+Excel 필요, 회사/집 무관)일 뿐 런타임 의존이 아니다(`tools/` 격리 — 본질 제약은 "런타임 비의존", 환경 구분이 아님).
 
 ## 저장소 구조
 
@@ -45,7 +45,7 @@ skills/fpna-excel/SKILL.md  # Claude 스킬 패키징 (작업7)
 templates_base/          # (선택) 채우기모드용 베이스 .xlsx — 솔로 사용 전제
 samples/                 # 내가 만든 골든샘플(.xlsx)
 tests/                   # 회귀 테스트 + 픽스처 생성기
-tools/verify_xlsx.py     # [집-전용] 실제 Excel(COM) 재계산·룩 검증
+tools/verify_xlsx.py     # [검증보조] 실제 Excel(COM) 재계산·룩 검증 (pywin32 필요·런타임 비의존)
 main.py  dispatch.md  sources.md  README.md  .gitignore
 ```
 
