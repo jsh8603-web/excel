@@ -27,6 +27,22 @@ UNIT_SCALE = {
     "원": 1, "krw": 1, "usd": 1, "%": 1,
 }
 
+# base(원) 환산용 스케일 사전. 무음 손상 방어 ①의 SSOT.
+# 셀내 접미("1,234천원", "3,400억") 분해 + 단위행("(단위: 백만원)") 환산 공용.
+SCALE = {
+    "천원": 1_000, "천": 1_000,
+    "백만원": 1_000_000, "백만": 1_000_000,
+    "억원": 100_000_000, "억": 100_000_000,
+    "조원": 1_000_000_000_000, "조": 1_000_000_000_000,
+    "원": 1,
+}
+# 셀내 접미 분해용: 길이 긴 단위 우선(억원 > 억). 부동소수 본체 + 단위 접미.
+# 본체는 (50)·△50·-50·50 등 음수표기 허용, 단위 뒤 닫는 괄호도 허용((50백만)).
+_SCALE_SUFFIX_RE = re.compile(
+    r"^\s*(\(?\s*[(△▲\-+]?\s*[\d,]*\.?\d+\s*\)?)\s*(%s)\s*\)?\s*$"
+    % "|".join(sorted(SCALE, key=len, reverse=True))
+)
+
 _NUM_RE = re.compile(r"^[\s ]*[(△▲\-+]?[\s]*[\d,]*\.?\d+[\s]*[)%]?[\s]*$")
 _PCT_RE = re.compile(r"%\s*$")
 _DATE_PATTERNS = [
@@ -34,6 +50,24 @@ _DATE_PATTERNS = [
     re.compile(r"^\d{4}년\s*\d{1,2}월(\s*\d{1,2}일)?$"),
     re.compile(r"^\d{4}\s*[Q분기]\s*\d?$", re.IGNORECASE),
 ]
+
+# 전각(full-width) 숫자 → ASCII. 한국/일본 엑셀에 종종 섞임 → 숫자 파싱 실패 방지.
+_FULLWIDTH_MAP = {ord("０") + i: ord("0") + i for i in range(10)}
+_FULLWIDTH_MAP[ord("．")] = ord(".")   # 전각 마침표
+_FULLWIDTH_MAP[ord("，")] = ord(",")   # 전각 콤마
+_FULLWIDTH_MAP[ord("－")] = ord("-")   # 전각 하이픈
+_FULLWIDTH_MAP[ord("％")] = ord("%")   # 전각 퍼센트
+_ZEROWIDTH = ("​", "﻿", "‌", "‍")
+
+
+def _normalize_digits(s: str) -> str:
+    """전각숫자·전각구두점 → ASCII, 제로폭 문자 제거(텍스트 숫자 정규화)."""
+    s = s.translate(_FULLWIDTH_MAP)
+    for z in _ZEROWIDTH:
+        if z in s:
+            s = s.replace(z, "")
+    return s
+
 
 
 def scale_from_number_format(fmt: str | None) -> int:
@@ -70,33 +104,71 @@ def parse_unit_label(text: str | None) -> tuple[str | None, int]:
     return None, 1
 
 
-def normalize_value(raw, *, fmt: str | None = None, unit_scale: int = 1):
-    """단일 셀 값 정규화.
+def scale_for_unit(unit: str | None) -> int:
+    """단위 라벨(또는 '(단위: 백만원)' 잔여 텍스트) → base(원) 환산 곱수.
 
-    반환: (number|str|None, sentinel:str|None, is_negative_paren:bool)
-      - 숫자로 해석되면 number (스케일 적용), sentinel=None
-      - 센티넬이면 (None, 매칭센티넬, False)
-      - 그 외 텍스트는 (정리된 str, None, False)
+    SCALE 사전 기준. 매칭 없으면 1. '%'·통화기호는 환산 대상 아님 → 1.
+    """
+    if not unit:
+        return 1
+    s = str(unit)
+    for u in sorted(SCALE, key=len, reverse=True):
+        if u in s:
+            return SCALE[u]
+    return 1
+
+
+def split_cell_scale(text):
+    """셀내 접미 스케일 분해. '1,234천원' → ('1,234', 1000), '3,400억' → ('3,400', 1e8).
+
+    반환: (본체문자열, 스케일곱수). 접미 없으면 (원본, 1).
+    부호/괄호 음수 prefix 는 본체에 그대로 남겨 normalize_value 가 처리.
+    """
+    if not isinstance(text, str):
+        return text, 1
+    m = _SCALE_SUFFIX_RE.match(text)
+    if not m:
+        return text, 1
+    return m.group(1).strip(), SCALE[m.group(2)]
+
+
+def normalize_value(raw, *, fmt: str | None = None, unit_scale: int = 1):
+    """단일 셀 값 정규화(하위호환 3-튜플 래퍼)."""
+    val, sentinel, neg, _scale = normalize_value_ex(raw, fmt=fmt, unit_scale=unit_scale)
+    return val, sentinel, neg
+
+
+def normalize_value_ex(raw, *, fmt: str | None = None, unit_scale: int = 1):
+    """단일 셀 값 정규화 + 셀내 접미 스케일 노출.
+
+    반환: (number|str|None, sentinel:str|None, is_negative:bool, cell_scale:int)
+      - 숫자로 해석되면 number(원값 그대로 — 스케일 미적용), sentinel=None
+      - 센티넬이면 (None, 매칭센티넬, False, 1)
+      - 그 외 텍스트는 (정리된 str, None, False, 1)
+      - cell_scale = 셀 텍스트 접미('1,234천원')에서 분해한 곱수(없으면 1).
+        ⚠ 값에는 곱하지 않는다(이중계상 방지). pipeline 이 우선순위(셀>블록>1)로 1회만 적용.
     """
     if raw is None:
-        return None, "", False
+        return None, "", False, 1
     if isinstance(raw, bool):
-        return raw, None, False
+        return raw, None, False, 1
     if isinstance(raw, (int, float)):
         # ⚠ 저장된 숫자값은 이미 실수치다. number_format 의 trailing comma 는
         # '표시 축약'일 뿐이므로 값에 곱하면 이중계상 → 곱하지 않는다.
         # 스케일/단위는 별도 unit 컬럼으로만 보존(consumer 가 해석).
-        return raw, None, False
+        return raw, None, False, 1
     if isinstance(raw, (_dt.datetime, _dt.date, _dt.time)):
-        return raw, None, False
+        return raw, None, False, 1
 
-    s = str(raw).replace(" ", " ").strip()
+    # 전각숫자·NBSP·꼬리공백 정규화(텍스트 숫자 보강)
+    s = _normalize_digits(str(raw).replace(" ", " ")).strip()
     low = s.lower()
     if low in SENTINELS:
-        return None, s, False
+        return None, s, False, 1
 
+    # 셀내 접미 스케일 분해('1,234천원' → 본체 '1,234' + scale 1000)
+    body, cell_scale = split_cell_scale(s)
     neg = False
-    body = s
     # 괄호 음수
     if body.startswith("(") and body.endswith(")"):
         neg = True
@@ -120,11 +192,10 @@ def normalize_value(raw, *, fmt: str | None = None, unit_scale: int = 1):
         if neg:
             num = -num
         if is_pct:
-            return num / 100.0, None, neg
-        # 텍스트로 저장된 숫자: 원값 그대로(단위 접미는 unit 컬럼으로 별도 보존)
-        return num, None, neg
+            return num / 100.0, None, neg, 1  # %는 스케일 환산 대상 아님
+        return num, None, neg, cell_scale
     except (ValueError, AttributeError):
-        return s, None, False
+        return s, None, False, 1
 
 
 def scale_factor(fmt: str | None, unit_scale: int) -> int:
@@ -178,6 +249,8 @@ def infer_column_type(values: list, *, threshold: float = 0.7) -> str:
 
 
 __all__ = [
-    "SENTINELS", "UNIT_SCALE", "scale_from_number_format", "parse_unit_label",
-    "normalize_value", "scale_factor", "regex_type", "infer_column_type",
+    "SENTINELS", "UNIT_SCALE", "SCALE", "scale_from_number_format",
+    "parse_unit_label", "scale_for_unit", "split_cell_scale",
+    "normalize_value", "normalize_value_ex", "scale_factor",
+    "regex_type", "infer_column_type",
 ]

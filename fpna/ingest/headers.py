@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .cells import (Cell, DATA, HEADER, LABEL, CORNER, BLANK,
-                    T_NUMERIC, T_DATE, T_CHARACTER)
-from .detect import Block
+                    T_NUMERIC, T_DATE, T_CHARACTER, T_ERROR)
+from .detect import Block, UNIT_RE
 
 
 def unmerge_fill(cells: list[Cell]) -> None:
@@ -45,6 +45,33 @@ import re as _re
 _MARKER_RE = _re.compile(r"[(),%△▲\-+.]|\d{1,3},\d{3}")
 
 
+def fill_down_ditto(cells: list[Cell], cols: list[int],
+                    row_range: tuple[int, int]) -> set[tuple[int, int]]:
+    """카테고리 열의 빈칸(상동)을 직전 값으로 단방향(위→아래) 충전(in-place).
+
+    무음 손상 방어 ③: ditto 빈칸 미충전 → 행 의미 깨짐.
+    - 결정적: 같은 입력 → 같은 출력. 같은 열에서 위→아래로만 전파.
+    - 첫 비빈칸 이전의 선두 빈칸은 채우지 않음(부모 없음).
+    - 채운 셀의 (row,col) 집합 반환 → 호출측이 DITTO_FILLED 플래그 부착.
+    """
+    pos = {(c.row, c.col): c for c in cells}
+    filled: set[tuple[int, int]] = set()
+    r0, r1 = row_range
+    for col in cols:
+        last = None  # (value, data_type, fmt)
+        for r in range(r0, r1 + 1):
+            c = pos.get((r, col))
+            if c is None:
+                continue
+            if not c.is_blank:
+                last = (c.value, c.data_type)
+            elif last is not None:
+                c.value, c.data_type = last
+                c.is_blank = False
+                filled.add((r, col))
+    return filled
+
+
 def _value_like(c: Cell) -> bool:
     """이 셀이 '데이터 값'처럼 보이는가?
 
@@ -55,10 +82,13 @@ def _value_like(c: Cell) -> bool:
     """
     if c.is_blank:
         return False
-    if c.data_type in (T_NUMERIC, T_DATE):
+    # 오류값(#DIV/0! 등)도 데이터 슬롯을 차지 → 열을 데이터 열로 유지(보존 위해).
+    if c.data_type in (T_NUMERIC, T_DATE, T_ERROR):
         return True
     if c.data_type == T_CHARACTER:
         s = str(c.value).strip()
+        if UNIT_RE.search(s):              # '(단위: ...)' 안내문 = 비값
+            return False
         if _re.fullmatch(r"\d{1,4}", s):   # bare 정수(연도 포함) = 비값
             return False
         if _MARKER_RE.search(s):
@@ -231,4 +261,4 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
 
 
 __all__ = ["unmerge_fill", "classify_cells", "nearest_header",
-           "unpivot_block", "LongRow"]
+           "unpivot_block", "LongRow", "fill_down_ditto"]

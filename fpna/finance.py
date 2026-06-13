@@ -127,9 +127,46 @@ def approx_equal(a, b, *, rel: float = 1e-6, abs_: float = 1e-6) -> bool:
     return math.isclose(a, b, rel_tol=rel, abs_tol=abs_)
 
 
+# --- 감가상각(정액법) — dims 비의존 순수 원시값 인터페이스 ---
+def straight_line_depreciation(acq_cost: float, salvage: float,
+                               life_months: int) -> float:
+    """정액법 월 상각액 = (취득가 - 잔존가) / 내용연수(월)."""
+    if life_months <= 0:
+        return 0.0
+    return (acq_cost - salvage) / life_months
+
+
+def depreciation_schedule(acq_cost: float, salvage: float, life_months: int, *,
+                          n_periods: int, start_index: int = 0
+                          ) -> list[tuple[float, float, float]]:
+    """기간별 (opening, dep, closing) 장부가 스케줄.
+
+    start_index = 가동(in-service) 시작 period 의 0-base 인덱스 (그 전 기간은 dep=0).
+    내용연수 마지막 달은 잔존가에 정확히 닿도록 잔액을 상각(부동소수 오차 흡수).
+    QC(R11)가 이 스케줄 합을 GL 상각비와 대사한다.
+    """
+    monthly = straight_line_depreciation(acq_cost, salvage, life_months)
+    rows: list[tuple[float, float, float]] = []
+    accum = 0.0
+    done = 0
+    for i in range(n_periods):
+        opening = acq_cost - accum
+        if i >= start_index and done < life_months:
+            dep = monthly
+            if done == life_months - 1:        # 마지막 달: 잔존가에 정확히 도달
+                dep = opening - salvage
+            accum += dep
+            done += 1
+        else:
+            dep = 0.0
+        rows.append((opening, dep, acq_cost - accum))
+    return rows
+
+
 __all__ = [
     "npv", "irr", "discounted_payback", "payback", "cagr",
     "variance", "variance_pct", "safe_div",
     "gross_margin", "operating_margin", "current_ratio", "ltv_cac",
     "approx_equal",
+    "straight_line_depreciation", "depreciation_schedule",
 ]

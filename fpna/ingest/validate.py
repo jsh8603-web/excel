@@ -24,6 +24,11 @@ class TidyRow:
     level: int = 0
     src_row: int = 0
     src_col: int = 0
+    # 무음 손상 방어 메타(결정적). value 는 base(원) 환산 후 값.
+    scale_applied: int = 1        # value 에 적용된 환산 곱수(셀>블록>1)
+    scale_source: str = "none"    # cell|block|none — 환산 곱수 출처
+    raw_value: object = None      # 원본 셀값(오류값/환산전 보존). value 와 다를 때만 채움
+    flags: str = ""               # ;구분 플래그(DITTO_FILLED 등)
 
 
 @dataclass

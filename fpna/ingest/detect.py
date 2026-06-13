@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .cells import Cell, T_CHARACTER, T_NUMERIC, T_DATE
+from .cells import Cell, T_CHARACTER, T_NUMERIC, T_DATE, T_ERROR
 
 # 영역탐지 파라미터(보수적 기본값)
 MIN_COLS = 2
@@ -118,10 +118,13 @@ _MARKER_RE = re.compile(r"[(),%△▲]|\d{1,3},\d{3}")
 
 
 def _looks_value(c: Cell) -> bool:
-    if c.data_type in (T_NUMERIC, T_DATE):
+    if c.data_type in (T_NUMERIC, T_DATE, T_ERROR):
         return True
     if isinstance(c.value, str):
         s = c.value.strip()
+        # '(단위: 백만원)' 류 안내문은 괄호 때문에 값처럼 보이나 비데이터 행.
+        if UNIT_RE.search(s):
+            return False
         if re.fullmatch(r"\d{1,4}", s):
             return False
         return bool(_MARKER_RE.search(s))

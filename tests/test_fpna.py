@@ -67,6 +67,123 @@ class TestIngest(unittest.TestCase):
         rows = {r.entity: r.value for r in res.tidy_rows}
         self.assertAlmostEqual(rows["가동률"], 0.85, places=4)
 
+    # ------------------------------------------------------------------
+    # 무음 손상 3종 방어 골든(G1 단위전파 / G2 혼재 / G4 ditto / G6 오류값).
+    # ⚠ 합성 *구조* 더미 — 재무 수치는 의미 없음(스케일/플래그 로직 검증용).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _ingest_wb(builder):
+        """openpyxl.Workbook 빌더 콜백 → 임시파일 저장 → ingest 결과."""
+        import openpyxl
+        from fpna.ingest import ingest_workbook
+        wb = openpyxl.Workbook()
+        builder(wb.active)
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as fh:
+            path = fh.name
+        try:
+            wb.save(path)
+            return ingest_workbook(path)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def test_g1_unit_scale_propagation(self):
+        """G1: 블록 내부 '(단위: 백만원)' → 블록 전체 값 base(원) 환산 + raw 보존."""
+        def build(ws):
+            ws["A1"] = "(단위: 백만원)"
+            ws["A2"], ws["B2"], ws["C2"], ws["D2"] = "계정", "2023", "2024", "2025"
+            ws["A3"], ws["B3"], ws["C3"], ws["D3"] = "매출", 1000, 1200, 1500
+            ws["A4"], ws["B4"], ws["C4"], ws["D4"] = "비용", 600, 800, 900
+            ws["A5"], ws["B5"], ws["C5"], ws["D5"] = "이익", 400, 400, 600
+        res = self._ingest_wb(build)
+        rows = {(r.entity, r.period): r for r in res.tidy_rows}
+        tr = rows[("매출", "2024")]
+        self.assertEqual(tr.value, 1200 * 1_000_000)   # 백만원 → 원
+        self.assertEqual(tr.scale_applied, 1_000_000)
+        self.assertEqual(tr.scale_source, "block")
+        self.assertEqual(tr.raw_value, 1200)           # 환산 전 원본 보존
+        # 단위행이 데이터로 오인되지 않음(period/entity 정상 복원)
+        self.assertEqual(rows[("이익", "2025")].value, 600 * 1_000_000)
+
+    def test_g2_scale_heterogeneous(self):
+        """G2: 블록단위(백만) 위에 셀 접미(억)가 우선 + 한 열 스케일 2종 → smell."""
+        def build(ws):
+            ws["A1"] = "(단위: 백만원)"
+            ws["A2"], ws["B2"], ws["C2"] = "항목", "2024", "2025"
+            ws["A3"], ws["B3"], ws["C3"] = "매출", 1000, "3,400억"
+            ws["A4"], ws["B4"], ws["C4"] = "비용", 500, 600
+            ws["A5"], ws["B5"], ws["C5"] = "이익", 500, 700
+        res = self._ingest_wb(build)
+        rows = {(r.entity, r.period): r for r in res.tidy_rows}
+        # 셀 접미(억=1e8)가 블록(백만=1e6)을 덮어씀
+        cell_tr = rows[("매출", "2025")]
+        self.assertEqual(cell_tr.value, 3400 * 100_000_000)
+        self.assertEqual(cell_tr.scale_source, "cell")
+        # 같은 열 다른 셀은 블록 스케일
+        self.assertEqual(rows[("비용", "2025")].scale_source, "block")
+        self.assertEqual(rows[("비용", "2025")].value, 600 * 1_000_000)
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("SCALE_HETEROGENEOUS", kinds)
+
+    def test_g4_ditto_fill_down(self):
+        """G4: 카테고리 열 상동 빈칸을 위→아래 단방향 충전 + DITTO_FILLED 플래그."""
+        def build(ws):
+            ws["A1"], ws["B1"], ws["C1"], ws["D1"] = "부문", "제품", "매출", "수량"
+            ws["A2"], ws["B2"], ws["C2"], ws["D2"] = "국내", "제품A", 100, 10
+            ws["A3"], ws["B3"], ws["C3"], ws["D3"] = None, "제품B", 200, 20
+            ws["A4"], ws["B4"], ws["C4"], ws["D4"] = "해외", "제품C", 300, 30
+            ws["A5"], ws["B5"], ws["C5"], ws["D5"] = None, "제품D", 400, 40
+        res = self._ingest_wb(build)
+        # 빈칸이 채워져 국내/해외가 모든 행에 전파
+        ents = {r.entity for r in res.tidy_rows}
+        self.assertEqual(ents, {"국내", "해외"})
+        filled = [r for r in res.tidy_rows if "DITTO_FILLED" in r.flags]
+        self.assertTrue(filled)                       # 일부 행은 ditto 충전 표시
+        # 충전된 행은 직전 부문 값 상속(제품B → 국내, 제품D → 해외)
+        b_rows = [r for r in res.tidy_rows if r.metric and "제품B" in r.metric]
+        self.assertTrue(all(r.entity == "국내" for r in b_rows))
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("DITTO_FILLED", kinds)
+
+    def test_g6_error_cell_preserved(self):
+        """G6: #DIV/0!/#N/A/#REF! → value=null + raw 보존 + ERROR_CELL smell.
+
+        ⛔ 0/NaN coerce 금지(reject 도 아님 — 행은 유지, 값만 null)."""
+        def build(ws):
+            ws["A1"], ws["B1"], ws["C1"] = "계정", "2024", "2025"
+            ws["A2"], ws["B2"], ws["C2"] = "매출", 1000, 1200
+            ws["A3"], ws["B3"], ws["C3"] = "증가율", "#DIV/0!", "#N/A"
+            ws["A4"], ws["B4"], ws["C4"] = "참조", "#REF!", 50
+        res = self._ingest_wb(build)
+        rows = {(r.entity, r.period): r for r in res.tidy_rows}
+        err = rows[("증가율", "2024")]
+        self.assertIsNone(err.value)                  # 0/NaN 아님 — null
+        self.assertEqual(err.raw_value, "#DIV/0!")    # 원본 보존
+        self.assertIn("ERROR_CELL", err.flags)
+        # 정상 값은 그대로
+        self.assertEqual(rows[("매출", "2024")].value, 1000)
+        self.assertEqual(rows[("참조", "2025")].value, 50)
+        # reject 되지 않고 smell 로만 표면화
+        self.assertEqual(res.report.n_rejected, 0)
+        err_smells = [s for s in res.smells if s["kind"] == "ERROR_CELL"]
+        self.assertEqual(len(err_smells), 3)
+
+    def test_fullwidth_and_suffix_normalization(self):
+        """전각숫자/NBSP/접미 정규화 — normalize_value_ex 단위 검증."""
+        from fpna.ingest.normalize import normalize_value_ex, split_cell_scale
+        self.assertEqual(split_cell_scale("1,234천원"), ("1,234", 1000))
+        self.assertEqual(split_cell_scale("3,400억"), ("3,400", 100_000_000))
+        # 전각숫자 + 접미
+        val, sent, neg, scale = normalize_value_ex("１，２３４천원")
+        self.assertEqual(val, 1234)
+        self.assertEqual(scale, 1000)
+        # 퍼센트는 스케일 환산 대상 아님
+        val, sent, neg, scale = normalize_value_ex("85%")
+        self.assertAlmostEqual(val, 0.85, places=4)
+        self.assertEqual(scale, 1)
+
 
 class TestDispatch(unittest.TestCase):
     def test_keyword_routing(self):

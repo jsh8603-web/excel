@@ -21,6 +21,8 @@ from __future__ import annotations
 import fpna._bootstrap  # noqa: F401  (vendor/ 주입)
 
 from openpyxl.chart import BarChart, LineChart, Reference, Series
+from openpyxl.formatting.rule import (CellIsRule, ColorScaleRule, DataBarRule,
+                                      FormulaRule, IconSetRule)
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -74,6 +76,14 @@ FMT_MULT = '0.0"x"'                          # 배수(LTV/CAC 등)
 FMT_DATE = "yyyy-mm-dd"
 FMT_MONTH = "yyyy-mm"
 FMT_MONEY_MN = '#,##0;(#,##0)'               # 단위는 헤더 표기(₩mn)
+# 셀 안에서 백만 단위 스케일(원값 그대로 두고 표시만 ÷1e6). 헤더에 (mn) 표기 병행.
+FMT_INT_MN = "#,##0,,;(#,##0,,)"
+FMT_NUM1_MN = "#,##0.0,,;(#,##0.0,,)"
+# KPI 신호 화살표(증감을 색+▲▼로). 양=초록▲ / 음=빨강▼ / 0=무채색.
+FMT_KPI_ARROW = '[Green]"▲"0.0%;[Red]"▼"0.0%;0.0%'
+# 빨강 음수(MR/대시보드 옵션). IB 정통은 검정 괄호(FMT_INT)가 기본, 빨강은 선택.
+FMT_INT_RED = "#,##0;[Red](#,##0)"
+FMT_NUM1_RED = "#,##0.0;[Red](#,##0.0)"
 
 # --------------------------------------------------------------------------
 # 4. 정렬
@@ -333,6 +343,178 @@ def write_matrix(ws: Worksheet, top: int, left: int, headers: list[str],
                      number_format=value_fmt)
         r += 1
     return r
+
+
+# --------------------------------------------------------------------------
+# 10. 정직성 헤더/푸터 — 단위·통화·기준일 명시 + 출처·주석
+# --------------------------------------------------------------------------
+def meta_header(ws: Worksheet, row: int, *, unit: str = "", currency: str = "",
+                period_basis: str = "", as_of: str = "", last_col: int = 6) -> int:
+    """단위·통화·기준일 메타 헤더 1줄(우측 정렬, 보조 회색).
+
+    회계법인/IB 산출물의 정직성 규약: 표 상단에 스케일·통화·회계기준·기준일을
+    명시해 숫자 해석의 모호성을 제거한다. 예) "(KRW mn) · FY ending Dec 31 ·
+    as-of 2026-05-31". 빈 항목은 생략. 다음 시작 행을 반환한다.
+    """
+    parts: list[str] = []
+    money = " ".join(p for p in (currency, unit) if p).strip()
+    if money:
+        parts.append("(%s)" % money)
+    if period_basis:
+        parts.append(period_basis)
+    if as_of:
+        parts.append("as-of %s" % as_of)
+    text = "  ·  ".join(parts)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=last_col)
+    c = ws.cell(row=row, column=1, value=text)
+    c.font = F_SOFT
+    c.alignment = RIGHT
+    return row + 1
+
+
+def source_footer(ws: Worksheet, row: int, *, source: str = "", note: str = "",
+                  prepared_by: str = "", last_col: int = 6) -> int:
+    """출처·주석·작성자 푸터 블록(보조 회색, 좌측 wrap).
+
+    각 라인은 "Source: ...", "Note: ...", "Prepared by: ..." 형태로 병합 표기.
+    감사 추적성(누가·무엇을 근거로)을 산출물에 박제한다. 다음 행을 반환한다.
+    """
+    r = row
+    for label, val in (("Source", source), ("Note", note),
+                       ("Prepared by", prepared_by)):
+        if not val:
+            continue
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=last_col)
+        c = ws.cell(row=r, column=1, value="%s: %s" % (label, val))
+        c.font = F_SOFT
+        c.alignment = LEFT_WRAP
+        r += 1
+    return r
+
+
+# --------------------------------------------------------------------------
+# 11. 조건부 서식 — openpyxl native rule (heatmap/databar/iconset)
+# --------------------------------------------------------------------------
+def apply_heatmap(ws: Worksheet, cell_range: str, *, low=POS_FG, mid=WHITE,
+                  high=NEG_FG, three_scale: bool = True) -> None:
+    """ColorScale 히트맵. 기본은 3색(낮음 초록 → 중간 흰 → 높음 빨강).
+
+    비용/리스크성 매트릭스에 적합. 부호 반대 표현이 필요하면 low/high 교체.
+    two-scale 가 필요하면 three_scale=False (min→max 2색).
+    """
+    if three_scale:
+        rule = ColorScaleRule(
+            start_type="min", start_color=low,
+            mid_type="percentile", mid_value=50, mid_color=mid,
+            end_type="max", end_color=high)
+    else:
+        rule = ColorScaleRule(start_type="min", start_color=low,
+                              end_type="max", end_color=high)
+    ws.conditional_formatting.add(cell_range, rule)
+
+
+def apply_databar(ws: Worksheet, cell_range: str, *, color: str = ACCENT_SOFT,
+                  show_value: bool = True) -> None:
+    """DataBar(셀 내 막대). 규모 비교용. 기본 색 = 액센트 옅은 톤."""
+    rule = DataBarRule(start_type="min", end_type="max", color=color,
+                       showValue=show_value, minLength=None, maxLength=None)
+    ws.conditional_formatting.add(cell_range, rule)
+
+
+def apply_iconset(ws: Worksheet, cell_range: str, *,
+                  icon_style: str = "3Arrows", reverse: bool = False,
+                  show_value: bool = True) -> None:
+    """IconSet(화살표/신호등 아이콘). KPI 방향·상태 신호화.
+
+    icon_style 예: '3Arrows'(▲▶▼), '3TrafficLights1'(신호등),
+    '3Symbols'(✓!✕), '4Arrows', '5Arrows'. reverse=True 면 임계 반전(비용성).
+    임계값(values)은 icon 개수(접두 숫자)에서 균등분할로 자동 생성.
+    """
+    try:
+        n = int(icon_style[0])
+    except (ValueError, IndexError):
+        n = 3
+    n = max(3, min(5, n))
+    values = [round(i * 100 / n) for i in range(n)]   # 균등 percent 임계
+    rule = IconSetRule(icon_style=icon_style, type="percent",
+                       values=values, showValue=show_value, reverse=reverse)
+    ws.conditional_formatting.add(cell_range, rule)
+
+
+def apply_zebra(ws: Worksheet, cell_range: str, *, fill: str = BAND) -> None:
+    """짝수 행 음영밴딩(FormulaRule MOD(ROW(),2)=0). 차트 줄무늬 충돌 회피용.
+
+    테이블 스타일 대신 조건부 서식으로 banding 을 깔아 가독성 확보.
+    """
+    rule = FormulaRule(formula=["MOD(ROW(),2)=0"], stopIfTrue=False,
+                       fill=PatternFill("solid", fgColor=fill))
+    ws.conditional_formatting.add(cell_range, rule)
+
+
+# --------------------------------------------------------------------------
+# 12. 페이지 setup — 인쇄 반복헤더·맞춤폭·푸터
+# --------------------------------------------------------------------------
+def page_setup_report(ws: Worksheet, *, title_rows: str | None = "1:2",
+                      print_area: str | None = None, fit_width: int = 1,
+                      fit_height: int = 0, footer: str | None = None) -> None:
+    """회계법인 룩 인쇄 설정: 반복 헤더 행·가로폭 맞춤·푸터(페이지/날짜).
+
+    - title_rows: 페이지마다 반복 인쇄할 헤더 행("1:2" 형식). None 이면 미설정.
+    - print_area: 인쇄 영역("A1:H40"). None 이면 미설정.
+    - fit_width/fit_height: fitToPage. height=0 = 행 길이 제한 없음(세로 분할 허용).
+    - footer: oddFooter 문자열. 기본 = "&P / &N  ·  &D"(페이지 N/총 · 날짜).
+    """
+    ps = ws.page_setup
+    ps.orientation = "landscape"
+    ps.fitToWidth = fit_width
+    ps.fitToHeight = fit_height
+    if ws.sheet_properties.pageSetUpPr is not None:
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+    else:
+        from openpyxl.worksheet.properties import PageSetupProperties
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    if title_rows:
+        ws.print_title_rows = title_rows
+    if print_area:
+        ws.print_area = print_area
+    ws.oddFooter.center.text = footer if footer is not None else "&P / &N  ·  &D"
+
+
+# --------------------------------------------------------------------------
+# 13. check / tie-out 셀 — ≠0(또는 |x|>tol)이면 적색 강조
+# --------------------------------------------------------------------------
+def check_cell(ws: Worksheet, row: int, col: int, formula: str, *, tol: float = 0,
+               number_format: str = FMT_INT, label: str | None = None,
+               label_col: int | None = None):
+    """tie-out 체크 셀. 수식 결과가 허용오차 tol 을 벗어나면 적색 배경 강조.
+
+    View Contract tie-out(BS 균형·브리지 합·소스 일치)의 시각화. 정상(=0)이면
+    무채색, 깨지면 한눈에 빨강. 라벨을 주면 label_col(기본 col-1)에 함께 기입.
+    """
+    f = formula if formula.startswith("=") else "=" + formula
+    cell = ws.cell(row=row, column=col, value=f)
+    cell.font = F_CALC
+    cell.alignment = RIGHT
+    cell.number_format = number_format
+    if label:
+        lc = label_col if label_col is not None else max(1, col - 1)
+        lcell = ws.cell(row=row, column=lc, value=label)
+        lcell.font = F_SOFT
+        lcell.alignment = LEFT
+    coord = "%s%d" % (get_column_letter(col), row)
+    bad_fill = PatternFill("solid", fgColor=NEG_FG)
+    bad_font = font(WHITE, bold=True)
+    if tol and tol > 0:
+        # |x| > tol 이면 강조 → 두 단측(>tol, <-tol) 규칙
+        for op, fm in (("greaterThan", [str(tol)]), ("lessThan", [str(-tol)])):
+            ws.conditional_formatting.add(
+                coord, CellIsRule(operator=op, formula=fm, stopIfTrue=False,
+                                  fill=bad_fill, font=bad_font))
+    else:
+        ws.conditional_formatting.add(
+            coord, CellIsRule(operator="notEqual", formula=["0"],
+                              stopIfTrue=False, fill=bad_fill, font=bad_font))
+    return cell
 
 
 __all__ = [name for name in dir() if not name.startswith("_")]
