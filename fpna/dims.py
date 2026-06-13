@@ -226,6 +226,70 @@ class Asset:
 
 
 # --------------------------------------------------------------------------- #
+# 7) Contract 차원 (자문 §2 — 재발 인스턴스)                                  #
+#   active window(start~end)는 "재발 인스턴스" 속성이고 외생 master 여야       #
+#   invariant 성립(Fact 파생은 순환 → 꼬리 결측 못 잡음). Account/Asset 과     #
+#   평행 instance-carrier(흡수 금지). R12·R14·cuttability 의 공통 전제.        #
+# --------------------------------------------------------------------------- #
+RECURRENCE: tuple[str, ...] = ("monthly", "quarterly", "annual", "one_time")
+CONTRACT_STATUS: tuple[str, ...] = ("active", "terminated", "suspended")
+LIFECYCLE_STATES: tuple[str, ...] = ("encumbered", "expended", "liquidated", "cancelled")
+
+_CADENCE: dict[str, int | None] = {"monthly": 1, "quarterly": 3, "annual": 12, "one_time": None}
+
+
+@dataclass(frozen=True)
+class Contract:
+    """재발 고정비 계약 1건. R12 엔진 = recurrence + status 쌍."""
+    contract_id: str                      # PK
+    account_id: str                       # FK → Account (N:1)
+    counterparty: str
+    start_date: _dt.date
+    end_date: _dt.date | None             # None = evergreen(상시 active)
+    recurrence: str                       # RECURRENCE
+    amount_per_period: float
+    currency: str = "KRW"
+    status: str = "active"                # CONTRACT_STATUS — ended vs missing 구분의 핵심
+    asset_id: str | None = None           # FK → Asset (N:1 nullable; SaaS=None)
+    lifecycle_state: str = "encumbered"   # LIFECYCLE_STATES
+
+    def __post_init__(self) -> None:
+        if self.recurrence not in RECURRENCE:
+            raise ValueError("recurrence 는 %s 중 하나: %r" % (RECURRENCE, self.recurrence))
+        if self.status not in CONTRACT_STATUS:
+            raise ValueError("status 는 %s 중 하나: %r" % (CONTRACT_STATUS, self.status))
+
+
+def expected_presence(contract: Contract, periods: list) -> set:
+    """R12 엔진: 활성 약정이 각 기간에 계상돼야 하는 {(contract_id, period_label)}.
+
+    status != active → 빈 집합(terminated/suspended 는 결측 정당, flag 억제).
+    evergreen(end_date=None) → 상시 active(skip 금지). recurrence cadence 로 정렬.
+    """
+    if contract.status != "active":
+        return set()
+    cad = _CADENCE[contract.recurrence]
+    active = []
+    for p in periods:
+        cd = p.cutoff_date
+        if cd is None:
+            active.append(p)
+            continue
+        if cd < contract.start_date:
+            continue
+        if contract.end_date is not None and cd > contract.end_date:
+            continue
+        active.append(p)
+    if not active:
+        return set()
+    if cad is None:                              # one_time: 첫 활성 기간만
+        return {(contract.contract_id, active[0].label)}
+    base = active[0].ordinal
+    return {(contract.contract_id, p.label) for p in active
+            if (p.ordinal - base) % cad == 0}
+
+
+# --------------------------------------------------------------------------- #
 # 내부 tidy fact 표현                                                         #
 # --------------------------------------------------------------------------- #
 @dataclass

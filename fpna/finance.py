@@ -163,10 +163,74 @@ def depreciation_schedule(acq_cost: float, salvage: float, life_months: int, *,
     return rows
 
 
+def depreciation_schedule_ext(acq_cost: float, salvage: float, life_months: int, *,
+                              n_periods: int, start_index: int = 0,
+                              first_period_factor: float = 1.0,
+                              disposal_index: int | None = None,
+                              impair_index: int | None = None,
+                              impair_to: float | None = None
+                              ) -> list[tuple[float, float, float]]:
+    """확장 정액법 스케줄 — C11 보완(부분월/처분/손상). 기존 함수는 그대로 유지.
+
+    기존 depreciation_schedule 의 상위호환 래퍼(모든 옵션 기본값 = 원래 동작).
+
+    first_period_factor
+        가동 1차월 일할/반월 비율(0<f≤1). 1차월 상각 = monthly*f, 부족분은 정상적으로
+        내용연수 마지막 달이 잔액을 흡수(closing=salvage 보존). 이중연환산 방지.
+    disposal_index
+        처분 period 의 0-base 인덱스. 그 period 부터(포함) 상각 중단·closing 고정.
+        처분손익(carrying-처분가)은 범위 밖(메모만) — 여기선 D&A 중단만.
+    impair_index / impair_to
+        손상 이벤트 period(0-base) 와 손상 후 carrying(=새 depreciable base 상단).
+        그 period 의 opening 을 impair_to 로 base-reset, 잔여 내용연수에 prospective 재배분.
+
+    반환 = [(opening, dep, closing), ...] (n_periods 행, 전수 유지).
+    closing 누적 정합: Σdep = (취득가-잔존) 에서 처분/손상으로 조정된 양만큼 차감.
+    """
+    if life_months <= 0:
+        return [(acq_cost, 0.0, acq_cost) for _ in range(n_periods)]
+
+    monthly = straight_line_depreciation(acq_cost, salvage, life_months)
+    rows: list[tuple[float, float, float]] = []
+    book = acq_cost            # 현재 장부가(opening)
+    done = 0                   # 소진한 내용연수(월) — 마지막 달 흡수 판정
+    base_salvage = salvage     # base-reset(손상) 후 잔존가는 유지
+    disposed = False
+
+    for i in range(n_periods):
+        opening = book
+
+        # 손상: 이 period 의 opening 을 impair_to 로 base-reset(prospective 재배분)
+        if impair_index is not None and i == impair_index and impair_to is not None:
+            opening = impair_to
+            book = impair_to
+            remain = max(life_months - done, 1)
+            monthly = max(book - base_salvage, 0.0) / remain   # 잔여기간 재배분
+
+        if disposed or (disposal_index is not None and i >= disposal_index):
+            disposed = True
+            rows.append((opening, 0.0, opening))   # 처분 후 D&A 중단·장부가 고정
+            continue
+
+        if i >= start_index and done < life_months:
+            f = first_period_factor if i == start_index else 1.0
+            dep = monthly * f
+            if done == life_months - 1:            # 마지막 달: 잔존가에 정확히 도달
+                dep = opening - base_salvage
+            dep = min(dep, max(opening - base_salvage, 0.0))   # 음수/과상각 방지
+            book = opening - dep
+            done += 1
+        else:
+            dep = 0.0
+        rows.append((opening, dep, book))
+    return rows
+
+
 __all__ = [
     "npv", "irr", "discounted_payback", "payback", "cagr",
     "variance", "variance_pct", "safe_div",
     "gross_margin", "operating_margin", "current_ratio", "ltv_cac",
     "approx_equal",
     "straight_line_depreciation", "depreciation_schedule",
+    "depreciation_schedule_ext",
 ]

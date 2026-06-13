@@ -22,6 +22,7 @@ _MODULES = {
     # 고정비 FP&A (fpna-fixed-cost-tables 스킬)
     "fc_depreciation_schedule": "fpna.templates.fc_depreciation_schedule",
     "fc_variance_bridge": "fpna.templates.fc_variance_bridge",
+    "fc_maturity_wall": "fpna.templates.fc_maturity_wall",
 }
 
 

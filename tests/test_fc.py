@@ -179,6 +179,111 @@ class TestFcTemplates(unittest.TestCase):
         self.assertFalse(rep.passed)
 
 
+class TestC11Depreciation(unittest.TestCase):
+    """C11: R12 MISSING_ACCRUAL + 부분월/처분/손상 확장."""
+    def _mod(self):
+        return get_template("fc_depreciation_schedule")
+
+    def test_missing_accrual_emit_and_conserved(self):
+        mod = self._mod()
+        data = mod.golden_sample()
+        data.missing_accruals = {"V-001": ["FY2024-P05"]}
+        data.gl_dep_by_period = {}             # 총액 R11 대조 면제(결측으로 합 감소)
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        # 1층 emit: ledger 1행 + 시트 surfaced flag 1개
+        led = meta["anomaly_ledger"]
+        self.assertEqual(len(led), 1)
+        self.assertEqual(led.rows[0]["anomaly_type"], "MISSING_ACCRUAL")
+        self.assertEqual(led.rows[0]["grain"], ("V-001",))
+        self.assertEqual(meta["surfaced_flags"], 1)
+        # 2층 보존: 은폐 0 → passed True (anomaly 존재는 저장 막지 않음)
+        rep = mod.qc(wb, data)
+        self.assertTrue(rep.passed, rep.summary())
+
+    def test_missing_accrual_hidden_fails(self):
+        """surfaced flag 를 0 으로 위조하면 anomaly_conserved 가 FAIL(은폐 차단)."""
+        mod = self._mod()
+        data = mod.golden_sample()
+        data.missing_accruals = {"V-001": ["FY2024-P05"]}
+        data.gl_dep_by_period = {}
+        wb = mod.build(data)
+        wb._fpna_meta["surfaced_flags"] = 0    # 은폐 시뮬레이션
+        rep = mod.qc(wb, data)
+        self.assertFalse(rep.passed)
+
+    def test_no_anomaly_golden_clean(self):
+        mod = self._mod()
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        self.assertEqual(len(wb._fpna_meta["anomaly_ledger"]), 0)
+        self.assertEqual(wb._fpna_meta["surfaced_flags"], 0)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_disposal_stops_da(self):
+        """처분월부터 D&A 중단 + 이후 0. window 자동 축소로 가짜 결측 없음."""
+        mod = self._mod()
+        data = mod.golden_sample()
+        data.disposals = {"V-001": (2024, 7)}
+        data.gl_dep_by_period = {}
+        wb = mod.build(data)
+        fact = wb._fpna_meta["fact"]
+        post = [r["dep"] for r in fact.rows
+                if r["asset_no"] == "V-001" and r["period"] >= "FY2024-P07"]
+        self.assertTrue(all((d or 0.0) == 0.0 for d in post))
+        self.assertEqual(len(wb._fpna_meta["anomaly_ledger"]), 0)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_partial_first_month_and_impairment(self):
+        mod = self._mod()
+        # 부분월: 1차월 일할 0.5 — 전체 상각 합은 여전히 (취득가-잔존)에 수렴
+        data = mod.golden_sample()
+        data.first_period_factor = {"V-001": 0.5}
+        data.gl_dep_by_period = {}
+        wb = mod.build(data)
+        self.assertTrue(mod.qc(wb, data).passed)
+        # 손상: base-reset 이벤트가 빌드/QC 를 깨지 않음
+        data2 = mod.golden_sample()
+        data2.impairments = {"P-001": ((2024, 6), 60_000.0)}
+        data2.gl_dep_by_period = {}
+        wb2 = mod.build(data2)
+        self.assertTrue(mod.qc(wb2, data2).passed)
+
+
+class TestC12Bridge(unittest.TestCase):
+    """C12: timing/permanent 분류 + 잔차 버킷 명시."""
+    def _mod(self):
+        return get_template("fc_variance_bridge")
+
+    def test_kind_subtotals_in_meta(self):
+        mod = self._mod()
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        # golden: timing=-20, permanent=30+45+12=87, residual=3
+        self.assertAlmostEqual(meta["timing_sum"], -20.0)
+        self.assertAlmostEqual(meta["perm_sum"], 87.0)
+        self.assertAlmostEqual(meta["resid_sum"], 3.0)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_bad_kind_fails(self):
+        mod = self._mod()
+        data = mod.golden_sample()
+        data.factors[0].kind = "bogus"
+        rep = mod.qc(mod.build(data), data)
+        self.assertFalse(rep.passed)
+
+    def test_missing_residual_bucket_fails(self):
+        mod = self._mod()
+        data = mod.golden_sample()
+        # 잔차 버킷을 permanent 로 바꿔 residual 부재화 → C12-2 FAIL
+        for f in data.factors:
+            if f.kind == "residual":
+                f.kind = "permanent"
+        rep = mod.qc(mod.build(data), data)
+        self.assertFalse(rep.passed)
+
+
 class TestNoForbiddenHeuristic(unittest.TestCase):
     """R6: fc 빌더 소스에 샘플링/head/top-N 휴리스틱 토큰이 없어야 한다."""
     def test_fc_builders_clean(self):

@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fpna._bootstrap  # noqa: F401
@@ -296,6 +297,68 @@ class TestTemplatesQC(unittest.TestCase):
                 self.assertTrue(res.qc.passed, "%s QC FAIL: %s" % (t, res.qc.summary()))
                 self.assertTrue(res.saved)
                 self.assertTrue(os.path.isfile(out))
+
+
+class TestTieOutGates(unittest.TestCase):
+    """핵심 보고(손익·이사회팩) tie-out 게이트 — plug 은폐·보드숫자≠모델숫자 차단.
+
+    ⚠ 구조 더미만 변형(실금액 아님) — 게이트가 *불균형을 잡는지* 검증.
+    """
+
+    # --- pnl_3statement BS 균형(A=L+E) ---------------------------------
+    def test_pnl_golden_is_linked_and_balanced(self):
+        from fpna.templates import pnl_3statement as m
+        data = m.golden_sample()
+        self.assertTrue(data.linked, "골든은 3-statement 연결 모드여야 함")
+        wb = m.build(data)
+        rep = m.qc(wb, data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("BS 균형(A=L+E)", names)
+        self.assertIn("RE roll(기초+NI-배당)", names)
+        self.assertIn("CF 간접법 기말현금 == BS 현금", names)
+
+    def test_pnl_bs_imbalance_fails_qc(self):
+        """자산을 1 틀면(plug 은폐 시나리오) BS 균형 check 가 FAIL 해야."""
+        from fpna.templates import pnl_3statement as m
+        data = m.golden_sample()
+        broken = replace(data, other_assets=data.other_assets + 1.0)
+        wb = m.build(broken)
+        rep = m.qc(wb, broken)
+        self.assertFalse(rep.passed, "BS 불균형인데 QC 통과 — plug 은폐 미차단")
+        bs = [(n, ok) for n, ok, _ in rep.checks if n == "BS 균형(A=L+E)"]
+        self.assertEqual(bs, [("BS 균형(A=L+E)", False)])
+
+    def test_pnl_re_roll_break_fails_qc(self):
+        """기말 RE 가 roll 과 안 맞으면(배당 누락 시나리오) FAIL."""
+        from fpna.templates import pnl_3statement as m
+        data = m.golden_sample()
+        # 배당을 늘리면 RE_end·equity·BS 가 전부 깨짐 → 최소 한 tie FAIL
+        broken = replace(data, dividends=data.dividends + 50.0)
+        rep = m.qc(m.build(broken), broken)
+        self.assertFalse(rep.passed)
+
+    # --- board_kpi_pack source tie-out ---------------------------------
+    def test_board_golden_source_tie(self):
+        from fpna.templates import board_kpi_pack as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("source tie-out(합)", names)
+        self.assertIn("source tie-out(항목별)", names)
+
+    def test_board_source_mismatch_fails_qc(self):
+        """보드 표기값(actual) ≠ 출처(source) → source tie-out FAIL."""
+        from fpna.templates import board_kpi_pack as m
+        data = m.golden_sample()
+        ks = list(data.kpis)
+        ks[0] = replace(ks[0], actual=ks[0].source + 99.0)  # 보드숫자만 부풀림
+        broken = replace(data, kpis=ks)
+        rep = m.qc(m.build(broken), broken)
+        self.assertFalse(rep.passed, "보드≠출처인데 QC 통과 — 신뢰붕괴 미차단")
+        item = [(n, ok) for n, ok, _ in rep.checks if n == "source tie-out(항목별)"]
+        self.assertEqual(item, [("source tie-out(항목별)", False)])
 
 
 if __name__ == "__main__":

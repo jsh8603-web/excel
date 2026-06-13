@@ -33,6 +33,12 @@ STANDARD_FACTORS = (
 class BridgeFactor:
     name: str
     amount: float    # 기여(+증가 / -감소)
+    # C12: timing(기간귀속·phasing) vs permanent(구조적·런레이트) 분류.
+    #   "residual" = 잔차 버킷(명시). 미지정 = "permanent"(보수적 기본).
+    kind: str = "permanent"   # "timing" | "permanent" | "residual"
+
+
+_FACTOR_KINDS = ("timing", "permanent", "residual")
 
 
 @dataclass
@@ -54,11 +60,11 @@ def golden_sample() -> FixedCostBridgeInput:
     """구조 골든 — 잔차가 (end-base) 차이를 정확히 흡수해 tie_out PASS."""
     base = 1_000.0
     factors = [
-        BridgeFactor("계약변경", +30.0),
-        BridgeFactor("신규자산 가동", +45.0),
-        BridgeFactor("일회성(원상복구·중도해지)", -20.0),
-        BridgeFactor("물가·환율 연동", +12.0),
-        BridgeFactor("잔차", +3.0),
+        BridgeFactor("계약변경", +30.0, kind="permanent"),
+        BridgeFactor("신규자산 가동", +45.0, kind="permanent"),
+        BridgeFactor("일회성(원상복구·중도해지)", -20.0, kind="timing"),
+        BridgeFactor("물가·환율 연동", +12.0, kind="permanent"),
+        BridgeFactor("잔차", +3.0, kind="residual"),
     ]
     end = base + sum(f.amount for f in factors)
     keys = [("CC10",), ("CC20",), ("CC30",)]
@@ -139,15 +145,30 @@ def build(data: FixedCostBridgeInput, *, mode: str = "create", base_path=None) -
     hs.section_header(ws, rec_top, "대사 (Reconciliation)", last_col=last_col)
     hs.write_matrix(ws, rec_top + 1, 1, ["대사 항목", "값"], recon, value_fmt=hs.FMT_INT)
 
+    # C12: timing vs permanent 분류 소계 + 잔차 버킷 명시.
+    timing_sum = sum(f.amount for f in data.factors if f.kind == "timing")
+    perm_sum = sum(f.amount for f in data.factors if f.kind == "permanent")
+    resid_sum = sum(f.amount for f in data.factors if f.kind == "residual")
+    kt = rec_top + len(recon) + 2
+    kt = hs.section_header(ws, kt, "변동 성격 분류 (Timing vs Permanent)", last_col=last_col)
+    for label, val in (("timing(기간귀속)", timing_sum),
+                       ("permanent(구조적·런레이트)", perm_sum),
+                       ("residual(잔차)", resid_sum)):
+        hs.set_cell(ws, kt, 1, label, role="label", align=hs.LEFT)
+        hs.set_cell(ws, kt, 3, val, role="calc", number_format=hs.FMT_INT)
+        kt += 1
+
     if data.commentary:
-        cr = rec_top + len(recon) + 3
+        cr = kt + 1
         cr = hs.section_header(ws, cr, "코멘터리", last_col=last_col)
         for line in data.commentary:
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
 
-    wb._fpna_meta = {"out_sum": out_sum, "end_value": data.end_value}
+    wb._fpna_meta = {"out_sum": out_sum, "end_value": data.end_value,
+                     "timing_sum": timing_sum, "perm_sum": perm_sum,
+                     "resid_sum": resid_sum}
     return wb
 
 
@@ -165,6 +186,26 @@ def qc(wb: openpyxl.Workbook, data: FixedCostBridgeInput) -> QCReport:
     # R9 시나리오 모집단 정렬 (cost center 키)
     if data.actual_keys or data.budget_keys:
         vc.assert_scenario_aligned(rep, data.actual_keys, data.budget_keys)
+
+    # C12-1: kind 값 유효성(timing/permanent/residual) — 오타 = 분류 누수.
+    bad_kind = [f.name for f in data.factors if f.kind not in _FACTOR_KINDS]
+    rep.add("C12 factor kind 유효", not bad_kind,
+            "" if not bad_kind else "잘못된 kind: " + ", ".join(bad_kind))
+
+    # C12-2: 잔차 버킷 명시 — 요인이 있으면 residual 버킷이 정확히 정의돼야(은닉 잔차 금지).
+    resid_factors = [f for f in data.factors if f.kind == "residual"]
+    rep.add("C12 잔차 버킷 명시", (not data.factors) or len(resid_factors) >= 1,
+            "" if (not data.factors or resid_factors) else "잔차 버킷(kind=residual) 부재")
+
+    # C12-3: 잔차 유의성 flag(soft) — 잔차/총변동 > 임계면 요인 분해 불충분 경고.
+    #   R3 tie_out 이 균형은 보장하므로 passed 를 깎지 않고 노출만(자문 R3: 정직한 emit).
+    resid = wb._fpna_meta.get("resid_sum", 0.0)
+    total_move = abs(data.end_value - data.base_value)
+    if total_move > 0:
+        ratio = abs(resid) / total_move
+        rep.add("C12 잔차 유의(soft)", True,
+                "잔차/총변동=%.1f%% (>30%% 시 요인 분해 보강 권고)" % (ratio * 100.0)
+                if ratio > 0.30 else "잔차 비중 %.1f%%" % (ratio * 100.0))
 
     # 워터폴 차트 1개 존재
     rep.add("워터폴 차트", len(wb.active._charts) >= 1,

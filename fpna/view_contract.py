@@ -329,6 +329,28 @@ def assert_allocation_conserves(rep: QCReport, pre_sum: float, post_sum: float, 
     return ok
 
 
+def assert_commitment_conserved(rep: QCReport, recognized_cum: float, remaining: float,
+                                total: float, *, cancelled: float = 0.0,
+                                tol: float = 0.0,
+                                name: str = "R14 commitment_conserved") -> bool:
+    """R14 약정보존: Σ인식누계 + Σ잔여약정 + 취소 == 계약총액. 과대인식 차단.
+
+    레퍼런스(차용): 정부회계 encumbrance 보존(총=소진+미소진+취소) + flow conservation
+    (유입=유출+잔류). 인식누계 > 계약총액 = 리스총액보다 많은 비용화 = 사고 → 차단.
+    """
+    lhs = recognized_cum + remaining + cancelled
+    diff = abs(lhs - total)
+    over = recognized_cum > total + tol
+    ok = (diff <= tol) and (not over)
+    detail = []
+    if diff > tol:
+        detail.append("보존 불일치: 인식+잔여+취소=%.6g 총액=%.6g" % (lhs, total))
+    if over:
+        detail.append("과대인식: 인식누계 %.6g > 총액 %.6g" % (recognized_cum, total))
+    rep.add(name, ok, "; ".join(detail))
+    return ok
+
+
 # --------------------------------------------------------------------------- #
 # Anomaly ledger 2층 (자문 R3) — render gate 재정의                           #
 #   1층 emit: anomaly = 발견. 저장 막지 않고 ledger+flag 로 노출.             #

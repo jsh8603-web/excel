@@ -24,6 +24,8 @@ _RULES = [
                                   r"내용\s*연수", r"자산\s*대장.*상각"]),
     ("fc_variance_bridge", [r"고정비.*브리지", r"고정비.*변동", r"고정비.*요인",
                             r"고정비.*walk", r"고정비.*워크", r"고정비\s*bridge"]),
+    ("fc_maturity_wall", [r"만기\s*도래", r"maturity\s*wall", r"약정\s*만기",
+                          r"갱신\s*도래", r"만기\s*벽"]),
     ("investment_appraisal", [r"npv", r"irr", r"투자\s*타당성", r"회수\s*기간",
                               r"payback", r"할인\s*현금", r"capex", r"투자\s*검토"]),
     ("variance", [r"예실", r"plan\s*vs\s*actual", r"예산\s*대비\s*실적",
