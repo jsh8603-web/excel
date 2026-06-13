@@ -130,6 +130,14 @@ def _base_owned_gate(rep: QCReport, wb, data, template) -> bool:
     led = _ledger_of(wb, template)
     if led is not None:
         vc.assert_anomaly_conserved(rep, led, _surfaced_of(wb, template) or 0)
+    # T4 보존법칙 백본(자문 R2 C6): 템플릿이 conserves(wb,data) 를 노출하면
+    # **raw INPUT 산술 vs 보고 총계** 를 스파인이 강제 대조. provenance 규칙 —
+    # raw 변(독립값)은 build 헬퍼가 아니라 data(INPUT)에서 나와야 유효(침묵형 오답 차단).
+    if hasattr(template, "conserves"):
+        for item in (template.conserves(wb, data) or []):
+            name, raw_independent, reported = item
+            vc.assert_tie_out(rep, raw_independent, reported, tol=1e-6,
+                              name="T4 보존:%s" % name)
     return rep.passed
 
 

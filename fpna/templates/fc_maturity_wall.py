@@ -168,6 +168,65 @@ def build(data: MaturityWallInput, *, mode: str = "create", base_path=None) -> o
     return wb
 
 
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy) + T4 보존 (conserves) — module-level                   #
+#   GRAIN/REQUIRED/UNIT_POLICY 는 binding.bind_and_check 가 강제(중앙).        #
+#   from_tidy 는 형태 조립만(트리 1행=1계약). 검증은 중앙이 재검(어댑터 불신). #
+# --------------------------------------------------------------------------- #
+GRAIN = ("contract_id",)                       # 1행 = 1 계약 (pre-shape 유일성)
+REQUIRED = ("contracts",)                      # 계약 리스트 비면 거부
+UNIT_POLICY = {"contracts.amount_per_period": float}   # 기간당 금액 = 수치
+
+
+def from_tidy(rows) -> MaturityWallInput:
+    """tidy rows → MaturityWallInput. 형태 조립만(검증은 binding 중앙이 재검).
+
+    행 컬럼(계약 1건/행): contract_id, account_id, counterparty, start_date,
+      end_date(빈값=evergreen), recurrence, amount_per_period, [status].
+    헤더 메타(title/unit/fy_start_month/report_period 등)는 dataclass 기본값 사용
+    (tidy 는 데이터 행만; 보고 메타는 호출자가 별도 지정).
+    """
+    from fpna.binding import _coerce
+    contracts = []
+    for r in rows:
+        end_raw = r.get("end_date")
+        end = _coerce(end_raw, __import__("datetime").date) \
+            if (end_raw not in (None, "", "evergreen")) else None
+        contracts.append(Contract(
+            contract_id=_coerce(r.get("contract_id"), str),
+            account_id=_coerce(r.get("account_id"), str),
+            counterparty=_coerce(r.get("counterparty"), str),
+            start_date=_coerce(r.get("start_date"), __import__("datetime").date),
+            end_date=end,
+            recurrence=_coerce(r.get("recurrence"), str),
+            amount_per_period=_coerce(r.get("amount_per_period"), float),
+            status=_coerce(r.get("status"), str) or "active",
+        ))
+    return MaturityWallInput(contracts=contracts)
+
+
+def conserves(wb, data):
+    """T4 보존: data(INPUT) 에서 독립 재합산한 연환산총계 == build 보고 grand.
+
+    ⛔ build 의 _rows/_annualized 재호출 금지(자문 C6 provenance: 같은 헬퍼는
+    침묵형 오답을 못 잡는다). INPUT.contracts 를 직접 순회해 독립 경로로 산출한다.
+    포함규칙(active + 미만료)의 *의미*는 동일 적용하되 *코드경로는 독립*이다.
+    """
+    import datetime as _dt   # noqa: F401 (독립 산술용)
+    cal = AccountingCalendar(fiscal_year_start_month=data.fy_start_month)
+    ref = cal.period(*data.report_period).cutoff_date
+    raw = 0.0
+    for c in data.contracts:                     # INPUT 직접 순회(독립 경로)
+        if c.status != "active":
+            continue
+        if c.end_date is not None:
+            rem = (c.end_date.year - ref.year) * 12 + (c.end_date.month - ref.month)
+            if rem < 0:
+                continue                         # 이미 만료 제외
+        raw += c.amount_per_period * _PER_YEAR.get(c.recurrence, 1)
+    return [("연환산총계", raw, wb._fpna_meta["grand"])]
+
+
 def qc(wb: openpyxl.Workbook, data: MaturityWallInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -183,4 +242,5 @@ def qc(wb: openpyxl.Workbook, data: MaturityWallInput) -> QCReport:
     return rep
 
 
-__all__ = ["TYPE", "MaturityWallInput", "golden_sample", "build", "qc"]
+__all__ = ["TYPE", "MaturityWallInput", "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy", "conserves"]

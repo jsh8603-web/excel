@@ -178,11 +178,13 @@ def cmd_decrypt(args):
 
 
 def cmd_dispatch(args):
-    from fpna.dispatcher import dispatch
+    from fpna.dispatcher import route
     text = " ".join(args)
-    res = dispatch(text)
-    _print("판정: %s  (근거: %s, score=%d)" % (res.template, res.reason, res.score))
-    _print("렌더: py main.py render %s out.xlsx" % res.template)
+    r = route(text)          # T3: stage 분류 선행(ingest/profile/transport/analysis)
+    _print("단계: %s  (근거: %s)" % (r["stage"], r.get("reason", "")))
+    if r.get("template"):
+        _print("템플릿: %s" % r["template"])
+    _print("다음: %s" % r["next_command"])
     return 0
 
 
@@ -190,11 +192,27 @@ def cmd_render(args):
     from fpna.pipeline import run_report
     from fpna.templates import get_template
     if not args:
-        _print("사용: py main.py render <type> [out.xlsx]"); return 2
+        _print("사용: py main.py render <type> [out.xlsx] [--csv tidy.csv]"); return 2
     type_name = args[0]
-    out = args[1] if len(args) > 1 else "out/%s.xlsx" % type_name
+    rest = args[1:]
+    csv_path = None
+    if "--csv" in rest:          # 실데이터 진입(T2): tidy.csv → from_tidy 로 INPUT 바인딩
+        i = rest.index("--csv")
+        csv_path = rest[i + 1] if i + 1 < len(rest) else None
+        rest = rest[:i] + rest[i + 2:]
+    out = rest[0] if rest else "out/%s.xlsx" % type_name
     mod = get_template(type_name)
-    data = mod.golden_sample()
+    if csv_path:
+        from fpna.binding import bind_from_csv
+        try:
+            data = bind_from_csv(mod, csv_path)
+        except NotImplementedError:
+            _print("%s 는 아직 --csv 미지원(from_tidy 미선언) → 골든으로만 가능." % type_name); return 2
+        except Exception as e:
+            _print("실데이터 바인딩 실패: %s" % e); return 2
+        _print("실데이터 바인딩: %s → %s INPUT" % (csv_path, type_name))
+    else:
+        data = mod.golden_sample()
     res = run_report(mod, data, out_path=out)   # 스파인 단일 통로(검증 메인 강제)
     _print(res.qc.summary())
     _print(("저장: " + res.out_path) if res.saved else "QC 미통과/우회차단 → 저장 보류")

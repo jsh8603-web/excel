@@ -209,6 +209,55 @@ def build(data: HeadcountPlanInput, *, mode: str = "create",
 # --------------------------------------------------------------------------- #
 # qc                                                                          #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy) + T4 보존 (conserves) — module-level                   #
+# --------------------------------------------------------------------------- #
+GRAIN = ("dept", "period")                     # 1행 = 1 부서 × 1 기간
+REQUIRED = ("lines",)
+UNIT_POLICY = {"lines.base_salary_annual": float, "lines.loading_rate": float}
+
+
+def from_tidy(rows) -> HeadcountPlanInput:
+    """tidy rows(dept × period) → HeadcountPlanInput. 부서별 headcount 벡터 재조립.
+
+    행 컬럼: dept, period, headcount, [base_salary_annual, loading_rate, grade].
+    부서 가정(연봉·부담률·직급)은 그 부서 행에서 동일하다고 보고 첫 행에서 취득.
+    headcount 는 period 정렬(라벨 오름차순)로 벡터화 — 시간축 순서 보존.
+    """
+    from fpna.binding import _coerce
+    from itertools import groupby
+    keyf = lambda r: _coerce(r.get("dept"), str)
+    srt = sorted(rows, key=lambda r: (keyf(r), str(r.get("period"))))
+    lines = []
+    for dept, grp in groupby(srt, key=keyf):
+        grp = list(grp)
+        first = grp[0]
+        hc = [_coerce(r.get("headcount"), int) or 0 for r in grp]
+        lines.append(RosterLine(
+            dept=dept,
+            grade=_coerce(first.get("grade"), str) or "",
+            base_salary_annual=_coerce(first.get("base_salary_annual"), float) or 0.0,
+            loading_rate=_coerce(first.get("loading_rate"), float) or 0.0,
+            headcount=hc,
+        ))
+    return HeadcountPlanInput(lines=lines)
+
+
+def conserves(wb, data):
+    """T4 보존: INPUT 직접 산술로 총 인건비 독립 재합산 == build 보고 grand.
+
+    ⛔ build 의 _build_fact 재호출 금지. RosterLine 의 fully_loaded_monthly 는
+    dataclass property(build 헬퍼 아님)라 INPUT 고유 산술로 간주 — 독립 경로.
+    부서 월 인건비 = Σ(headcount × FL월). 전 부서·전 기간 합.
+    """
+    raw = 0.0
+    for ln in data.lines:                        # INPUT 직접 순회(독립 경로)
+        flm = ln.base_salary_annual * (1.0 + ln.loading_rate) / 12.0
+        for hc in ln.headcount:
+            raw += hc * flm
+    return [("총인건비", raw, wb._fpna_meta["grand"])]
+
+
 def qc(wb: openpyxl.Workbook, data: HeadcountPlanInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -248,4 +297,5 @@ def qc(wb: openpyxl.Workbook, data: HeadcountPlanInput) -> QCReport:
 
 
 __all__ = ["TYPE", "RosterLine", "HeadcountPlanInput",
-           "golden_sample", "build", "qc"]
+           "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy", "conserves"]

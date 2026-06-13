@@ -222,6 +222,60 @@ def build(data: DebtScheduleInput, *, mode: str = "create", base_path=None) -> o
 # --------------------------------------------------------------------------- #
 # qc                                                                          #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy) — module-level                                         #
+#   conserves 는 deferred(자문 C6): 보고 총계(closing)는 sweep/draw 현금 캐스   #
+#   케이드를 거친 _roll 의 산물이라, INPUT 만으로 독립 재산출하려면 _roll 로직   #
+#   전체를 복제해야 한다(복잡로직 중복 = provenance 이득 없음). 잔액 roll tie    #
+#   (Σopening−Σ상환−Σsweep+Σdraw==Σclosing)는 이미 qc 가 강제하므로 여기선      #
+#   conserves 미구현으로 deferred 명시(silent cap 금지).                        #
+# --------------------------------------------------------------------------- #
+GRAIN = ("tranche_id", "period")               # 1행 = 1 tranche × 1 기간
+REQUIRED = ("tranches",)
+UNIT_POLICY = {"tranches.opening": float, "tranches.rate": float}
+
+
+def from_tidy(rows) -> DebtScheduleInput:
+    """tidy rows(tranche × period) → DebtScheduleInput. mandatory·현금 벡터 재조립.
+
+    행 컬럼: tranche_id, period, [label, kind, opening, rate, sweep_enabled,
+      mandatory, cash_available].
+    tranche 속성(label/kind/opening/rate/sweep)은 같은 tranche 첫 기간 행에서 취득.
+    mandatory 는 period 정렬로 벡터화. cash_available 는 period 단위(아무 tranche
+    행에서나 동일 값) — period 별 최초 등장값으로 벡터화.
+    """
+    from fpna.binding import _coerce
+    from itertools import groupby
+    srt = sorted(rows, key=lambda r: (str(r.get("tranche_id")), str(r.get("period"))))
+    # period 순서(첫 등장) + period별 cash
+    period_order = []
+    cash_by_period = {}
+    for r in rows:
+        p = str(r.get("period"))
+        if p not in cash_by_period:
+            period_order.append(p)
+            cash_by_period[p] = _coerce(r.get("cash_available"), float) or 0.0
+    period_order.sort()
+    tranches = []
+    for tid, grp in groupby(srt, key=lambda r: _coerce(r.get("tranche_id"), str)):
+        grp = list(grp)
+        by_p = {str(r.get("period")): r for r in grp}
+        first = grp[0]
+        mand = [_coerce(by_p.get(p, {}).get("mandatory"), float) or 0.0
+                for p in period_order]
+        tranches.append(DebtTranche(
+            tranche_id=tid,
+            label=_coerce(first.get("label"), str) or tid,
+            kind=_coerce(first.get("kind"), str) or "term",
+            opening=_coerce(first.get("opening"), float) or 0.0,
+            rate=_coerce(first.get("rate"), float) or 0.0,
+            mandatory=mand,
+            sweep_enabled=_coerce(first.get("sweep_enabled"), bool) or False,
+        ))
+    cash = [cash_by_period[p] for p in period_order]
+    return DebtScheduleInput(tranches=tranches, cash_available=cash)
+
+
 def qc(wb: openpyxl.Workbook, data: DebtScheduleInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -265,4 +319,5 @@ def qc(wb: openpyxl.Workbook, data: DebtScheduleInput) -> QCReport:
     return rep
 
 
-__all__ = ["TYPE", "DebtTranche", "DebtScheduleInput", "golden_sample", "build", "qc"]
+__all__ = ["TYPE", "DebtTranche", "DebtScheduleInput", "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy"]

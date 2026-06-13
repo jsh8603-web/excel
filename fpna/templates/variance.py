@@ -175,6 +175,39 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
     return wb
 
 
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy) — module-level                                         #
+#   conserves 는 deferred: variance 의 보존 검증(브리지 합산 tie = Σ구간 ==     #
+#   양끝차, R9 시나리오 정합)은 이미 qc 가 INPUT 기준으로 강제한다. _fpna_meta  #
+#   에 별도 보고 총계가 없어(총계는 is_total LineItem) T4 형태 tie 대상이 없다  #
+#   → conserves 미구현으로 deferred 명시(silent cap 금지).                      #
+# --------------------------------------------------------------------------- #
+GRAIN = ("name",)                              # 1행 = 1 항목(LineItem)
+REQUIRED = ("items",)
+UNIT_POLICY = {"items.plan": float, "items.actual": float}
+
+
+def from_tidy(rows) -> VarianceInput:
+    """tidy rows(항목 1건/행) → VarianceInput. 형태 조립만.
+
+    행 컬럼: name, plan, actual, [cost_nature, level, is_total, key].
+    bool 컬럼(cost_nature/is_total)은 'true/1/y' 류 문자열도 허용(_coerce).
+    """
+    from fpna.binding import _coerce
+    items = []
+    for r in rows:
+        items.append(LineItem(
+            name=_coerce(r.get("name"), str),
+            plan=_coerce(r.get("plan"), float) or 0.0,
+            actual=_coerce(r.get("actual"), float) or 0.0,
+            cost_nature=_coerce(r.get("cost_nature"), bool) or False,
+            level=_coerce(r.get("level"), int) or 0,
+            is_total=_coerce(r.get("is_total"), bool) or False,
+            key=_coerce(r.get("key"), str) or "",
+        ))
+    return VarianceInput(items=items)
+
+
 def qc(wb: openpyxl.Workbook, data: VarianceInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -221,4 +254,5 @@ def qc(wb: openpyxl.Workbook, data: VarianceInput) -> QCReport:
     return rep
 
 
-__all__ = ["TYPE", "LineItem", "VarianceInput", "golden_sample", "build", "qc"]
+__all__ = ["TYPE", "LineItem", "VarianceInput", "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy"]

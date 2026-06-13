@@ -280,6 +280,61 @@ def build(data: CohortRetentionInput, *, mode: str = "create",
 # --------------------------------------------------------------------------- #
 # qc                                                                          #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy, assemble 2단 트리) + T4 보존 (conserves)               #
+# --------------------------------------------------------------------------- #
+GRAIN = ("cohort", "age")                      # 1행 = 1 cohort × 1 경과기간
+REQUIRED = ("cohorts",)
+UNIT_POLICY = {"cohorts.cohort": str}          # 코호트 라벨 존재(라인 단위 가벼운 검증)
+
+
+def from_tidy(rows) -> CohortRetentionInput:
+    """tidy rows(cohort × age) → CohortRetentionInput. binding.assemble 2단 트리.
+
+    행 컬럼: cohort, age, start_mrr, [churn, contraction, expansion].
+    레벨1 = cohort(CohortLine), 레벨2 = age(CohortStep, child). assemble 이
+    cohort 로 그룹 → 각 그룹 내 age 로 다시 그룹해 steps 중첩 조립한다.
+    """
+    from fpna import binding
+    spec = {
+        "header_cls": CohortRetentionInput,
+        "header_fields": {},                    # 보고 메타는 기본값
+        "levels": [
+            {"key_cols": ["cohort"], "line_cls": CohortLine,
+             "fields": {"cohort": ("cohort", str)},
+             "child": {
+                 "child_attr": "steps", "key_cols": ["age"], "line_cls": CohortStep,
+                 "fields": {"age": ("age", int), "start_mrr": ("start_mrr", float),
+                            "churn": ("churn", float), "contraction": ("contraction", float),
+                            "expansion": ("expansion", float)},
+             }},
+        ],
+        # 첫 레벨 child_attr(헤더가 받는 라인 리스트 속성명)
+    }
+    spec["levels"][0]["child_attr"] = "cohorts"
+    inp = binding.assemble(rows, spec)
+    # churn/contraction/expansion 가 None(빈셀)으로 들어오면 0.0 으로 정규화
+    for ln in inp.cohorts:
+        for s in ln.steps:
+            if s.churn is None:
+                s.churn = 0.0
+            if s.contraction is None:
+                s.contraction = 0.0
+            if s.expansion is None:
+                s.expansion = 0.0
+    return inp
+
+
+def conserves(wb, data):
+    """T4 보존: INPUT step 의 end_mrr 독립 재합산 == build 보고 src_sum.
+
+    ⛔ build 의 _build_fact 재호출 금지. CohortStep.end_mrr 는 dataclass property
+    (start − churn − contraction + expansion)라 INPUT 고유 산술 — 독립 경로.
+    """
+    raw = sum(s.end_mrr for ln in data.cohorts for s in ln.steps)   # INPUT 직접
+    return [("Σend_mrr", raw, wb._fpna_meta["src_sum"])]
+
+
 def qc(wb: openpyxl.Workbook, data: CohortRetentionInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -341,4 +396,5 @@ def qc(wb: openpyxl.Workbook, data: CohortRetentionInput) -> QCReport:
 
 
 __all__ = ["TYPE", "CohortStep", "CohortLine", "CohortRetentionInput",
-           "golden_sample", "build", "qc"]
+           "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy", "conserves"]

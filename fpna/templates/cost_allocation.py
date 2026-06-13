@@ -193,6 +193,61 @@ def build(data: AllocationInput, *, mode: str = "create", base_path=None) -> ope
 # --------------------------------------------------------------------------- #
 # qc                                                                          #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy) + T4 보존 (conserves) — module-level                   #
+# --------------------------------------------------------------------------- #
+GRAIN = ("pool_id", "cost_center")             # 1행 = 1 (pool × cost_center)
+REQUIRED = ("pools", "cost_centers")
+UNIT_POLICY = {"pools.amount": float}
+
+
+def from_tidy(rows) -> AllocationInput:
+    """tidy rows(pool × cost_center) → AllocationInput. 풀·CC·배부기준 재조립.
+
+    행 컬럼: pool_id, cost_center, weight, [pool_label, amount, driver, cc_label].
+    풀 속성(label/amount/driver)은 같은 pool_id 행에서 동일하다고 보고 취득.
+    cost_centers 순서 = 첫 등장 순서(결정성). driver_weights = {pool:{cc:weight}}.
+    """
+    from fpna.binding import _coerce
+    cost_centers = []
+    cc_labels = {}
+    pools_by_id = {}
+    pool_order = []
+    weights = {}
+    for r in rows:
+        pid = _coerce(r.get("pool_id"), str)
+        cc = _coerce(r.get("cost_center"), str)
+        if cc not in cc_labels:
+            cost_centers.append(cc)
+            cc_labels[cc] = _coerce(r.get("cc_label"), str) or cc
+        if pid not in pools_by_id:
+            pool_order.append(pid)
+            pools_by_id[pid] = CostPool(
+                pool_id=pid,
+                label=_coerce(r.get("pool_label"), str) or pid,
+                amount=_coerce(r.get("amount"), float) or 0.0,
+                driver=_coerce(r.get("driver"), str) or "",
+            )
+            weights[pid] = {}
+        w = _coerce(r.get("weight"), float)
+        if w is not None:
+            weights[pid][cc] = w
+    return AllocationInput(
+        cost_centers=cost_centers, cc_labels=cc_labels,
+        pools=[pools_by_id[p] for p in pool_order], driver_weights=weights)
+
+
+def conserves(wb, data):
+    """T4 보존: INPUT 풀 금액 독립 합산 == build 보고 pool_sum(배부 전 총액).
+
+    ⛔ build 의 _allocate 재호출 금지. INPUT.pools 의 amount 를 직접 합산(독립).
+    배부 후 보존(Σ배부+Σ미배부==Σ풀)은 qc 가 별도로 본다 — 여기선 배부 전
+    원천 총액이 보고값과 합치하는지(provenance)만 독립 산술로 tie.
+    """
+    raw = sum(p.amount for p in data.pools)      # INPUT 직접(독립 경로)
+    return [("풀총액(배부전)", raw, wb._fpna_meta["pool_sum"])]
+
+
 def qc(wb: openpyxl.Workbook, data: AllocationInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -224,4 +279,5 @@ def qc(wb: openpyxl.Workbook, data: AllocationInput) -> QCReport:
     return rep
 
 
-__all__ = ["TYPE", "CostPool", "AllocationInput", "golden_sample", "build", "qc"]
+__all__ = ["TYPE", "CostPool", "AllocationInput", "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy", "conserves"]

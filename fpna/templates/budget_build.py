@@ -100,6 +100,39 @@ def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workb
     return wb
 
 
+# --------------------------------------------------------------------------- #
+# T2 바인딩 (from_tidy) — module-level                                         #
+#   conserves 는 deferred: budget_build 는 합계를 Excel 수식(=SUM)에만 두고     #
+#   _fpna_meta 에 보고 총계를 심지 않는다. T4 보존은 reported = _fpna_meta[...] #
+#   를 전제하므로 여기선 tie 대상이 없다 → conserves 미구현(silent cap 금지,    #
+#   본 주석으로 deferred 명시). 필요 시 build 가 grand 를 _fpna_meta 에 심는     #
+#   변경이 선행돼야 함(build 변경은 본 작업 스코프 밖).                          #
+# --------------------------------------------------------------------------- #
+GRAIN = ("dept",)                              # 1행 = 1 부서
+REQUIRED = ("depts",)
+UNIT_POLICY = {"depts.avg_cost": float}
+
+
+def from_tidy(rows) -> BudgetInput:
+    """tidy rows(부서 1건/행) → BudgetInput. 형태 조립만.
+
+    행 컬럼: dept, headcount, avg_cost, [method, prior_budget].
+    method 기본 'ZBB'(prior_budget 미사용); incremental 이면 prior_budget 필수
+    (qc 가 baseline 누락을 별도로 잡는다).
+    """
+    from fpna.binding import _coerce
+    depts = []
+    for r in rows:
+        depts.append(DeptLine(
+            dept=_coerce(r.get("dept"), str),
+            headcount=_coerce(r.get("headcount"), int) or 0,
+            avg_cost=_coerce(r.get("avg_cost"), float) or 0.0,
+            method=(_coerce(r.get("method"), str) or "ZBB"),
+            prior_budget=_coerce(r.get("prior_budget"), float) or 0.0,
+        ))
+    return BudgetInput(depts=depts)
+
+
 def qc(wb, data: BudgetInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
@@ -125,4 +158,5 @@ def qc(wb, data: BudgetInput) -> QCReport:
     return rep
 
 
-__all__ = ["TYPE", "DeptLine", "BudgetInput", "golden_sample", "build", "qc"]
+__all__ = ["TYPE", "DeptLine", "BudgetInput", "golden_sample", "build", "qc",
+           "GRAIN", "REQUIRED", "UNIT_POLICY", "from_tidy"]

@@ -133,4 +133,73 @@ def dispatch(request_text: str = "", *, columns: list[str] | None = None,
     return best
 
 
-__all__ = ["dispatch", "DispatchResult"]
+# --------------------------------------------------------------------------- #
+# 단계(stage) 라우팅 — "지금 파이프라인 어느 단계인가" 선행 판정                #
+#   dispatch() 는 분석표 템플릿 28종을 고를 뿐 "더러운 엑셀이냐/운반이냐"는      #
+#   판정하지 않는다. classify_stage 가 그 앞단을 책임진다.                       #
+#   stage ∈ {ingest, profile, transport, analysis}.                            #
+# --------------------------------------------------------------------------- #
+# (stage, [키워드정규식]) — 위에서부터 우선. analysis 는 fall-through 기본값.
+_STAGE_RULES = [
+    ("transport", [r"암호화", r"복호화", r"encrypt", r"decrypt", r"메일\s*본문",
+                   r"메일로\s*보", r"운반", r"전송", r"반출.*텍스트", r"본문에\s*붙여"]),
+    ("profile", [r"스키마", r"shape", r"프로파일", r"차원\s*없", r"형태만",
+                 r"회사에서\s*집", r"집으로\s*반출", r"구조\s*반출", r"마트.*반출"]),
+    ("ingest", [r"더럽", r"누더기", r"비정형", r"정리해", r"깨끗하게", r"정형화",
+                r"시트가\s*엉망", r"병합\s*셀", r"머지\s*셀", r"제목행", r"각주.*섞",
+                r"엉망.*엑셀", r"raw\s*엑셀", r"원본\s*엑셀.*정리"]),
+]
+
+# stage → 사람이 바로 칠 수 있는 다음 명령(플레이스홀더 포함).
+_STAGE_COMMAND = {
+    "ingest": "py main.py ingest <파일.xlsx> out/ingest",
+    "profile": "py main.py profile <마트.csv> out/profile_spec.yaml",
+    "transport": "py main.py encrypt <평문.txt> --mail   (받는 쪽: py main.py decrypt <암호문>)",
+    "analysis": "py main.py dispatch \"<요청>\"  →  py main.py render <type> out/<type>.xlsx",
+}
+
+
+def classify_stage(request_text: str = "", *, has_messy_file: bool = False,
+                   has_clean_table: bool = False) -> tuple[str, str]:
+    """요청을 파이프라인 단계로 선분류한다.
+
+    반환 = (stage, next_command). stage ∈ {ingest, profile, transport, analysis}.
+    텍스트 키워드를 우선 판정하고, 파일 단서(messy/clean)로 보강한다.
+    analysis 는 기본값 — 단계 키워드가 없으면 분석표 요청으로 본다(→ dispatch 가 템플릿 판정).
+    """
+    text = (request_text or "").lower()
+    for stage, pats in _STAGE_RULES:
+        if any(re.search(p, text) for p in pats):
+            return stage, _STAGE_COMMAND[stage]
+    # 텍스트 신호 없을 때 파일 단서로 보강: 누더기 파일이면 ingest 가 입력을 만든다.
+    if has_messy_file and not has_clean_table:
+        return "ingest", _STAGE_COMMAND["ingest"]
+    return "analysis", _STAGE_COMMAND["analysis"]
+
+
+def route(request_text: str = "", *, columns: list[str] | None = None,
+          metrics: list[str] | None = None, has_messy_file: bool = False,
+          has_clean_table: bool = False) -> dict:
+    """단계 라우팅 + (analysis 면) 템플릿 판정까지 한 번에.
+
+    반환 dict 키:
+      stage          — ingest/profile/transport/analysis
+      next_command   — 사람이 바로 칠 수 있는 명령 문자열
+      reason         — 판정 근거
+      template       — analysis 일 때만(dispatch 결과). 그 외 None
+    dispatch() 는 그대로 호출만 하므로 기존 라우팅은 변하지 않는다(하위호환).
+    """
+    stage, next_command = classify_stage(
+        request_text, has_messy_file=has_messy_file, has_clean_table=has_clean_table)
+    if stage != "analysis":
+        return {"stage": stage, "template": None,
+                "next_command": next_command,
+                "reason": "단계 키워드 매칭 → %s" % stage}
+    disp = dispatch(request_text, columns=columns, metrics=metrics)
+    render_cmd = "py main.py render %s out/%s.xlsx" % (disp.template, disp.template)
+    return {"stage": "analysis", "template": disp.template,
+            "next_command": render_cmd,
+            "reason": "분석표 → dispatch: %s" % disp.reason}
+
+
+__all__ = ["dispatch", "DispatchResult", "classify_stage", "route"]
