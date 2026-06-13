@@ -83,6 +83,9 @@ _RULES = [
                         r"손익계산서", r"income\s*statement"]),
     ("board_kpi_pack", [r"이사회", r"board", r"kpi", r"대시보드", r"dashboard",
                         r"경영\s*보고", r"월간\s*보고"]),
+    # 정리표 — 계산 없이 문자+숫자 데이터를 보기 좋게 정리(measure 희소 데이터 착지점).
+    ("listing", [r"정리표", r"정리해", r"명세", r"목록", r"리스트", r"listing",
+                 r"대장", r"보기\s*좋게", r"표로\s*정리", r"나열"]),
 ]
 
 
@@ -235,4 +238,32 @@ def route(request_text: str = "", *, columns: list[str] | None = None,
             "reason": "분석표 → dispatch: %s" % disp.reason}
 
 
-__all__ = ["dispatch", "DispatchResult", "classify_stage", "route", "resolve_pack"]
+# --------------------------------------------------------------------------- #
+# 컬럼 의미 기반 추천 (infer.summarize 결과 → 템플릿/레이아웃)                  #
+#   infer 를 import 하지 않고 summary dict 만 받는다(느슨한 결합). 호출자가     #
+#   fpna.infer.infer_columns→summarize 로 만들어 전달. measure 유무가 1차 분기. #
+# --------------------------------------------------------------------------- #
+def recommend_from_roles(summary: dict) -> DispatchResult:
+    """infer.summarize(dict) → DispatchResult. "적용 템플릿 없음" 종착 제거.
+
+    summary 키: time/measure/dimension/id(list) + has_measure/n_measure/n_dimension.
+    분기: measure 0 → listing(정리표) / time+measure → period_trend /
+          dim+2measure(계획·실적류) → variance / dim+1measure → listing(소계) /
+          그 외 → listing.
+    """
+    nm = summary.get("n_measure", 0)
+    has_time = bool(summary.get("time"))
+    has_dim = bool(summary.get("dimension") or summary.get("id"))
+    if nm == 0:
+        return DispatchResult("listing", "measure 0 → 정리표(식별자 위주 데이터)", 1)
+    if has_time and nm >= 1:
+        return DispatchResult("period_trend", "time+measure → 기간 추이", 2)
+    if nm >= 2:
+        return DispatchResult("variance", "dim+2measure → 예실/비교(계획·실적 가정)", 2)
+    if has_dim and nm == 1:
+        return DispatchResult("listing", "dimension+1measure → 정리표(그룹 소계)", 1)
+    return DispatchResult("listing", "기본 → 정리표", 0)
+
+
+__all__ = ["dispatch", "DispatchResult", "classify_stage", "route", "resolve_pack",
+           "recommend_from_roles"]

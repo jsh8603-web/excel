@@ -282,6 +282,35 @@ def cmd_pack(args):
     return 1
 
 
+def cmd_analyze(args):
+    """다중시트 워크북 구조 스캔 + 템플릿/팩 추천(P3).
+
+    사용: py main.py analyze <파일.xlsx>
+    각 시트를 첫 N행 스캔 → 컬럼 의미 추론 → 시트별 착지 템플릿 + 워크북 추천.
+    """
+    import os
+    from fpna.analyze import analyze_workbook
+    if not args:
+        _print("사용: py main.py analyze <파일.xlsx>"); return 2
+    path = args[0]
+    if not os.path.isfile(path):
+        _print("파일 없음: %s" % path); return 2
+    res = analyze_workbook(path)
+    _print("=== 워크북 구조 분석: %s ===" % path)
+    for s in res["sheets"]:
+        if s["template"]:
+            m = s["summary"]
+            _print("[%s] %s → 추천: %s (%s)"
+                   % (s["sheet"], s["shape"], s["template"], s["reason"]))
+            _print("    measure=%s dim=%s time=%s id=%s"
+                   % (m["measure"], m["dimension"], m["time"], m["id"]))
+        else:
+            _print("[%s] %s (데이터 없음)" % (s["sheet"], s["shape"]))
+    _print("--- 워크북 추천 ---")
+    _print(res["recommendation"]["detail"])
+    return 0
+
+
 def cmd_golden(args):
     from fpna.templates import available
     from fpna.render import render_golden
@@ -318,7 +347,7 @@ _COMMANDS = {
     "list": cmd_list, "ingest": cmd_ingest, "profile": cmd_profile,
     "encrypt": cmd_encrypt, "decrypt": cmd_decrypt,
     "dispatch": cmd_dispatch, "report": cmd_report, "render": cmd_render,
-    "pack": cmd_pack,
+    "pack": cmd_pack, "analyze": cmd_analyze,
     "golden": cmd_golden, "selftest": cmd_selftest,
 }
 

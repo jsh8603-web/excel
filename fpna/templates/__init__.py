@@ -21,6 +21,7 @@ _MODULES = {
     "board_kpi_pack": "fpna.templates.board_kpi_pack",
     "cohort_retention": "fpna.templates.cohort_retention",
     "headcount_plan": "fpna.templates.headcount_plan",
+    "listing": "fpna.templates.listing",          # 범용 정리표(measure 희소 데이터 착지점)
     # 고정비 FP&A (fpna-fixed-cost-tables 스킬)
     "fc_depreciation_schedule": "fpna.templates.fc_depreciation_schedule",
     "fc_variance_bridge": "fpna.templates.fc_variance_bridge",
