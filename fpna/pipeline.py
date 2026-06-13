@@ -15,6 +15,7 @@ ONLY IF(pointer): ingest/profile/crypto 는 스파인 밖(편입 금지).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -25,6 +26,26 @@ from openpyxl.workbook.workbook import Workbook
 
 from fpna.templates.base import QCReport, qc_no_formula_errors
 from fpna import view_contract as vc
+
+
+# 모듈 사적 mint 토큰 — receipt 위조 차단(외부에서 GatePass 직접 만들어도 token 불일치).
+_MINT = object()
+
+
+def _hash_workbook(wb: Workbook) -> str:
+    """워크북 셀 내용(시트·좌표·값)의 결정적 해시. receipt-아티팩트 결속용.
+
+    값만 해시(스타일 제외) — 같은 데이터면 같은 해시. raw 산술과 무관한 무결성 지문.
+    ⚠ 무결성 ≠ 타당성: 해시는 '이 receipt가 이 wb 것'만 보증하지, 숫자가 옳은지는 불변식(T4)이 본다.
+    """
+    h = hashlib.sha256()
+    for ws in wb.worksheets:
+        h.update(("\x00SHEET:" + ws.title + "\x00").encode("utf-8"))
+        for row in ws.iter_rows():
+            for c in row:
+                if c.value is not None:
+                    h.update(("%s=%r;" % (c.coordinate, c.value)).encode("utf-8"))
+    return h.hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -48,11 +69,19 @@ class ReportTemplate(Protocol):
 class GatePass:
     """필수 경로를 통과했다는 증명. _render_with_receipt 가 요구한다.
 
-    스파인(run_report) 안에서만 생성된다. 외부에서 만들지 말 것(우회).
+    스파인(run_report) 안에서만 _mint() 로 생성된다. 외부에서 만들면 token 불일치로 거부.
+    qc_hash = 검증 통과 시점의 워크북 해시 → 저장 직전 wb 와 재대조(도용/stale receipt 차단).
     """
     template: str
     base_gate_ok: bool
     anomaly_conserved: bool
+    qc_hash: str = ""
+    token: object = None
+
+
+def _mint(template: str, qc_hash: str) -> GatePass:
+    """스파인 내부 전용 receipt 발급. _MINT 토큰을 박아 위조를 차단한다."""
+    return GatePass(template, True, True, qc_hash, _MINT)
 
 
 @dataclass
@@ -123,32 +152,44 @@ def _template_checks(rep: QCReport, wb, data, template) -> None:
 # 스파인 + receipt 강제 저장                                                   #
 # --------------------------------------------------------------------------- #
 def _render_with_receipt(wb, out_path: str, receipt: GatePass | None, force: bool) -> None:
-    """receipt 없이는 저장 불가(스파인 우회 차단). force 는 명시적 예외."""
-    if receipt is None and not force:
-        raise RuntimeError("GatePass 없이 저장 불가 — 필수 경로(run_report)를 우회했습니다.")
+    """receipt 없이는 저장 불가(스파인 우회 차단). force 는 명시적 예외.
+
+    receipt 가 있으면 (a) _MINT 토큰 (b) qc_hash == 현재 wb 해시 둘 다 확인.
+    → 외부에서 만든 가짜 GatePass·다른 wb 의 stale receipt 를 모두 거부.
+    """
+    if receipt is None:
+        if not force:
+            raise RuntimeError("GatePass 없이 저장 불가 — 필수 경로(run_report)를 우회했습니다.")
+    else:
+        if receipt.token is not _MINT:
+            raise RuntimeError("receipt 위조 — 스파인 밖에서 만든 GatePass 입니다.")
+        if receipt.qc_hash != _hash_workbook(wb):
+            raise RuntimeError("receipt-아티팩트 불일치 — 검증된 wb 와 저장 대상이 다릅니다.")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     wb.save(out_path)
 
 
 def run_report(template, data, *, out_path: str | None = None,
+               mode: str = "create", base_path: str | None = None,
                force: bool = False) -> RunResult:
     """유일한 스파인. grain→차원정합→View Contract→QC→render 순서를 소유한다.
 
     template = ReportTemplate(또는 기존 build/qc 덕타이핑 모듈). receipt 는 내부에서만
-    mint 되며, QC 통과(rep.passed) 시에만 발급된다. out_path 주면 receipt 있을 때만 저장.
+    _mint 되며, QC 통과(rep.passed) 시에만 발급된다. out_path 주면 receipt 있을 때만 저장.
+    mode/base_path 는 build 로 패스스루(생성/채우기 모드 동일하게 스파인이 소유).
     """
     type_name = getattr(template, "TYPE", None) or getattr(template, "__name__", "report")
 
-    wb = template.build(data)                       # ③ build (content)
+    wb = template.build(data, mode=mode, base_path=base_path)   # ③ build (content)
     rep = QCReport(type_name)
     _base_owned_gate(rep, wb, data, template)        # ②④ base 공통 게이트 + anomaly 보존
     _template_checks(rep, wb, data, template)        # ⑤ 템플릿 고유 불변식
 
-    receipt = GatePass(type_name, True, True) if rep.passed else None
+    receipt = _mint(type_name, _hash_workbook(wb)) if rep.passed else None
 
     saved = False
     if out_path is not None and (receipt is not None or force):
-        _render_with_receipt(wb, out_path, receipt, force)   # ⑥ receipt 요구
+        _render_with_receipt(wb, out_path, receipt, force)   # ⑥ receipt 요구(토큰+해시 재대조)
         saved = True
     return RunResult(wb, rep, receipt, saved, out_path if saved else None)
 

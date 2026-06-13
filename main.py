@@ -187,17 +187,17 @@ def cmd_dispatch(args):
 
 
 def cmd_render(args):
-    from fpna.render import render_golden
+    from fpna.pipeline import run_report
+    from fpna.templates import get_template
     if not args:
         _print("사용: py main.py render <type> [out.xlsx]"); return 2
     type_name = args[0]
     out = args[1] if len(args) > 1 else "out/%s.xlsx" % type_name
-    from fpna.render import render
-    from fpna.templates import get_template
-    data = get_template(type_name).golden_sample()
-    res = render(type_name, data, out)
+    mod = get_template(type_name)
+    data = mod.golden_sample()
+    res = run_report(mod, data, out_path=out)   # 스파인 단일 통로(검증 메인 강제)
     _print(res.qc.summary())
-    _print(("저장: " + res.out_path) if res.saved else "QC 미통과 → 저장 보류")
+    _print(("저장: " + res.out_path) if res.saved else "QC 미통과/우회차단 → 저장 보류")
     return 0 if res.saved else 1
 
 
