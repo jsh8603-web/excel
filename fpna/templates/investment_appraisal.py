@@ -298,6 +298,18 @@ def qc(wb: openpyxl.Workbook, data: InvestmentInput) -> QCReport:
     # NPV 재계산(파이썬) — 셀 수식 의도 검증(유효 할인율·TV 반영)
     py_npv = finance.npv(eff_rate, eff_cfs)
     rep.add("NPV 계산 가능", py_npv is not None, "")
+    # N-version(자문 R2 C6): finance.npv(=NPV 셀 수식의 SSOT) 와 독립으로 NPV 를
+    #   직접 Σcf[t]/(1+r)^t 로 다시 풀어 대조. finance.npv 회귀(부호·오프셋·지수)나
+    #   TV 가산 오류를 두 경로가 같이 틀리지 않게 N-version 으로 잡는다. eff_cfs/
+    #   eff_rate 도 INPUT 에서 인라인 재구성(빌드 헬퍼 _effective_* 비의존).
+    ind_cfs = list(data.cashflows)
+    if data.terminal_value is not None and ind_cfs:
+        ind_cfs[-1] = ind_cfs[-1] + data.terminal_value
+    ind_npv = sum(cf / (1.0 + eff_rate) ** t for t, cf in enumerate(ind_cfs))
+    rep.add("N-version NPV 독립 대조",
+            finance.approx_equal(py_npv, ind_npv, rel=1e-9, abs_=1e-6),
+            "" if finance.approx_equal(py_npv, ind_npv, rel=1e-9, abs_=1e-6)
+            else "lib=%.6g 독립=%.6g" % (py_npv, ind_npv))
     # IRR 존재성
     py_irr = finance.irr(eff_cfs)
     rep.add("IRR 해 존재", py_irr is not None,

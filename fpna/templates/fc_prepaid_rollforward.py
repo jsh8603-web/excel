@@ -227,6 +227,25 @@ def qc(wb: openpyxl.Workbook, data: PrepaidInput) -> QCReport:
     rep.add("A6 상각 음수 금지", nonneg_ok, "" if nonneg_ok else "음수 상각")
     rep.add("A6 amort≤beg+add(clamp)", clamp_ok, "" if clamp_ok else "잔액 초과 상각")
 
+    # N-version(자문 R2 C6): build 의 _roll/_build_fact 를 부르지 않고 INPUT 에서
+    #   clamp 롤포워드를 stdlib 로 다시 풀어 Σ기말을 독립 재계산 → meta sum_end 대조.
+    #   같은 clamp 버그(음수 잔액/초과상각)를 두 경로가 함께 틀리지 않게 한다.
+    nP = len(meta["periods"])
+    ind_sum_end = 0.0
+    for it in data.items:
+        beg = it.opening
+        for i in range(nP):
+            add = it.adds[i] if i < len(it.adds) else 0.0
+            want = it.amorts[i] if i < len(it.amorts) else 0.0
+            avail = beg + add
+            amort = min(max(want, 0.0), max(avail, 0.0))   # 음수·잔액초과 clamp
+            beg = avail - amort                            # = ending
+        ind_sum_end += beg
+    rep.add("N-version Σ기말 독립 대조",
+            abs(ind_sum_end - meta["sum_end"]) <= 1e-6,
+            "" if abs(ind_sum_end - meta["sum_end"]) <= 1e-6
+            else "독립=%.6g build=%.6g" % (ind_sum_end, meta["sum_end"]))
+
     rep.add("단위 표기", bool(data.unit), "" if data.unit else "unit 비어있음")
     return rep
 

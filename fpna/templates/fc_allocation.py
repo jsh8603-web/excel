@@ -21,10 +21,25 @@ import openpyxl
 
 from fpna import finance, house_style as hs
 from fpna import view_contract as vc
+from fpna.conserve import ConserveSpec
 from fpna.dims import Fact
 from fpna.templates.base import QCReport, qc_no_formula_errors
 
 TYPE = "fc_allocation"
+
+
+# --------------------------------------------------------------------------- #
+# T4 보존(자문 R2 C6) — 선언형 CONSERVE_SPECS                                  #
+#   배부 보존: 투입 풀(Σ direct_cost) == 최종귀착(alloc_final). raw 변은        #
+#   _stepdown(배부 cascade)을 부르지 않고 INPUT 직접 합 → 누수/이중귀착 노출.   #
+# --------------------------------------------------------------------------- #
+CONSERVE_SPECS = [
+    ConserveSpec(
+        "배부보존: 최종귀착 = Σ direct_cost",
+        raw_sum_fn=lambda d: sum(dp.direct_cost for dp in d.depts),
+        reported_key="alloc_final",
+    ),
+]
 
 
 @dataclass
@@ -184,7 +199,8 @@ def build(data: FcAllocationInput, *, mode: str = "create", base_path=None) -> o
                      prepared_by="FP&A", last_col=last_col)
     fact = Fact("1행 = 1 (source_dept × target_dept)", ("source", "target"),
                 [{"source": s, "target": t} for s, t, _ in flows])
-    wb._fpna_meta = {"fact": fact, "flows": flows, "final": final, "totals": totals}
+    wb._fpna_meta = {"fact": fact, "flows": flows, "final": final, "totals": totals,
+                     "alloc_final": totals["final"]}   # T4 CONSERVE_SPECS reported_key
     return wb
 
 

@@ -216,8 +216,22 @@ def qc(wb, data: PnLInput) -> QCReport:
 
     # --- 3-statement 연결 tie-out (linked 모드) -------------------------
     if data.linked:
-        # 1) BS 균형: 자산 == 부채 + 자본 (A = L + E). 불균형이면 plug 은폐 → FAIL.
-        assert_tie_out(rep, c["assets"], data.liabilities + c["equity"], tol=0.0,
+        # N-version(자문 R2 C6): _compute(빌드 경로) 와 독립으로 INPUT 스칼라에서
+        #   NI·equity·assets 를 재계산해 대조. _compute 와 같은 버그를 두 경로가
+        #   반복하지 않도록 부호·세금·잔류이익 누적을 직접 다시 푼다(off-by 노출).
+        ebt_ind = data.revenue - data.cogs - data.sga - data.da - data.interest
+        ni_ind = ebt_ind - max(0.0, ebt_ind) * data.tax_rate
+        equity_ind = data.re_begin + ni_ind - data.dividends + data.paid_in_capital
+        assets_ind = data.cash + data.other_assets
+        # 빌드 경로(_compute) 가 독립 재계산과 합치하는지(경로 일관)
+        assert_tie_out(rep, c["ni"], ni_ind, tol=1e-9, name="N-version NI 독립 대조")
+        assert_tie_out(rep, c["equity"], equity_ind, tol=1e-9,
+                       name="N-version 자본 독립 대조")
+        assert_tie_out(rep, c["assets"], assets_ind, tol=1e-9,
+                       name="N-version 자산 독립 대조")
+        # 1) BS 균형: 자산 == 부채 + 자본 (A = L + E). 독립 재계산값으로 검정 →
+        #   _compute 가 양변에 공통 버그를 심어도 INPUT 직접 경로가 잡는다.
+        assert_tie_out(rep, assets_ind, data.liabilities + equity_ind, tol=0.0,
                        name="BS 균형(A=L+E)")
         # 2) RE roll: 기초 + NI − 배당 = 기말 → equity 에 반영됐는지 (구조 정합)
         assert_tie_out(rep, data.re_begin + c["ni"] - data.dividends, c["re_end"],

@@ -22,10 +22,26 @@ from openpyxl.utils import get_column_letter
 
 from fpna import house_style as hs
 from fpna import view_contract as vc
+from fpna.conserve import ConserveSpec
 from fpna.dims import AccountingCalendar, Fact
 from fpna.templates.base import QCReport, qc_no_formula_errors
 
 TYPE = "working_capital"
+
+
+# --------------------------------------------------------------------------- #
+# T4 보존(자문 R2 C6) — 선언형 CONSERVE_SPECS                                  #
+#   정의 항등: ΣWC == Σ(AR + 재고 − AP). raw 변은 INPUT(rows_in)에서 직접 합 → #
+#   build 의 _compute(period 매핑·결측 처리)을 부르지 않는 N-version. 어느 기간 #
+#   WC 가 누락/덧셈오류면 sum_wc 와 불일치로 trip.                              #
+# --------------------------------------------------------------------------- #
+CONSERVE_SPECS = [
+    ConserveSpec(
+        "ΣWC = Σ(AR + 재고 − AP)",
+        raw_sum_fn=lambda d: sum(p.ar + p.inventory - p.ap for p in d.rows_in),
+        reported_key="sum_wc",
+    ),
+]
 
 
 @dataclass

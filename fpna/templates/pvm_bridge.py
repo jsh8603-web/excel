@@ -25,6 +25,7 @@ from openpyxl.utils import get_column_letter
 
 from fpna import house_style as hs
 from fpna import view_contract as vc
+from fpna.conserve import ConserveSpec
 from fpna.dims import Fact
 from fpna.templates.base import QCReport, qc_no_formula_errors
 
@@ -99,6 +100,23 @@ def golden_sample() -> PvmBridgeInput:
     return PvmBridgeInput(lines=lines,
                           commentary=["A 단가 +10% + 물량 +20% = price·volume 동시 기여",
                                       "C 물량 +37.5% = 저가 비중 상승(mix 음의 압력)"])
+
+
+# --------------------------------------------------------------------------- #
+# T4 보존(자문 R2 C6) — 선언형 CONSERVE_SPECS                                  #
+#   ΔTotal = Σp1·q1 − Σp0·q0 를 INPUT 에서 stdlib 로 독립 재계산(분해와 무관한  #
+#   직접 매출차). build 의 _decompose(price/volume/mix 경로)를 부르지 않는다 → #
+#   분해 합(reported total)과 다른 코드경로로 tie(off-by-one·항목누락 노출).    #
+# --------------------------------------------------------------------------- #
+CONSERVE_SPECS = [
+    ConserveSpec(
+        "ΔTotal = Σp1q1 − Σp0q0",
+        raw_sum_fn=lambda d: (sum(ln.p1 * ln.q1 for ln in d.lines)
+                              - sum(ln.p0 * ln.q0 for ln in d.lines)),
+        reported_key="total",
+        tol=1e-6,
+    ),
+]
 
 
 # --------------------------------------------------------------------------- #

@@ -13,9 +13,25 @@ import openpyxl
 
 from fpna import house_style as hs
 from fpna import view_contract as vc
+from fpna.conserve import ConserveSpec
 from fpna.templates.base import QCReport, qc_no_formula_errors
 
 TYPE = "budget_build"
+
+
+# --------------------------------------------------------------------------- #
+# T4 보존(자문 R2 C6) — 선언형 CONSERVE_SPECS                                  #
+#   부서 roll-up == 총계: grand(=SUM 수식이 표시하는 인건비 합) == Σ부서별      #
+#   (headcount×avg_cost). raw 변은 INPUT 직접합 → 부서 누락/이중계상이 build 가 #
+#   _fpna_meta 에 심은 grand 와 불일치로 trip(빌드 헬퍼 비의존).               #
+# --------------------------------------------------------------------------- #
+CONSERVE_SPECS = [
+    ConserveSpec(
+        "부서roll-up: grand = Σ(인원×단가)",
+        raw_sum_fn=lambda d: sum(dp.headcount * dp.avg_cost for dp in d.depts),
+        reported_key="grand",
+    ),
+]
 
 
 @dataclass
@@ -97,6 +113,9 @@ def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workb
 
     hs.report_footer(ws, r, source="인사 정원 · 인건비 단가표 · 전년 예산",
                      prepared_by="FP&A", last_col=last_col)
+    # T4 보존 reported_key: 부서별 인건비 grand(=SUM 수식이 표시할 값).
+    #   build 가 약속하는 총계 → CONSERVE_SPECS 가 INPUT 직접합으로 독립 대조.
+    wb._fpna_meta = {"grand": sum(d.headcount * d.avg_cost for d in data.depts)}
     return wb
 
 

@@ -335,10 +335,32 @@ def qc(wb: openpyxl.Workbook, data: FixedCostDeprInput) -> QCReport:
         if a.asset_no in touched:
             continue                              # 이벤트 자산 — 전체상각 대조 부적격
         if elapsed >= a.life_months:
+            # N-version 폐형식: 전수명 도달 비이벤트 자산은 Σ기간상각 == 취득−잔존.
+            #   got 은 fact(빌드 산출), expected 는 INPUT 폐형식 — 독립 두 경로 대조.
             expected = a.acq_cost - a.salvage
             ok = finance.approx_equal(got, expected, rel=1e-9, abs_=1e-6)
             rep.add("자산상각합:%s" % a.asset_no, ok,
                     "" if ok else "계산=%.6g 기대=%.6g" % (got, expected))
+        else:
+            # 부분활성(전수명 미도달) 자산: Σdep == 월정액 × 활성기간수 폐형식 대조.
+            #   단 가동 1차월 일할(first_period_factor)·처분·손상은 이 단순항등을
+            #   깨므로 전수월·비이벤트만 적용. monthly 는 finance 정액(빌드 ext 와
+            #   다른 경로). 가동월이 표시구간 안이면(부분 1차월) skip(메모).
+            monthly = finance.straight_line_depreciation(
+                a.acq_cost, a.salvage, a.life_months)
+            cnt = sum(1 for r in fact.rows
+                      if r["asset_no"] == a.asset_no and r["dep"] is not None)
+            # 단순 정액×기간수가 깨지는 경우 skip: (a) 가동월이 표시 시작보다 뒤
+            #   (1차월 일할) (b) first_period_factor≠1(명시 일할). 둘 다 1차월 부분
+            #   상각 → 폐형식 부등. 처분/손상/결측은 위 touched 에서 이미 제외.
+            ff = data.first_period_factor.get(a.asset_no, 1.0)
+            partial_first = (in_ord > periods[0].ordinal) or (ff != 1.0)
+            if not partial_first and cnt > 0:
+                exp_partial = monthly * cnt
+                ok = finance.approx_equal(got, exp_partial, rel=1e-9, abs_=1e-6)
+                rep.add("N-version 부분상각:%s(정액×기간)" % a.asset_no, ok,
+                        "" if ok else "계산=%.6g 기대=%.6g(월%.6g×%d)"
+                        % (got, exp_partial, monthly, cnt))
 
     # R12 재발성: 활성 window 의 (asset, period) 가 모두 *계상*됐는지(결측=MISSING_ACCRUAL).
     #   build 의 ledger 를 신선 ledger 로 재도출해 동일 결과인지 교차검증(은폐 불가).

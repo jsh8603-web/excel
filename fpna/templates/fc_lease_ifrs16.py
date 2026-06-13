@@ -208,6 +208,27 @@ def qc(wb: openpyxl.Workbook, data: LeaseIfrs16Input) -> QCReport:
     vc.assert_tie_out(rep, meta["rou0_sum"], totals["rou_amort"], tol=1e-6,
                       name="R3 rou_amort_tie")
 
+    # N-version 부등식(자문 R2 C6): 리스부채(PV) ≤ Σ미할인 리스료. discount_rate ≥ 0
+    #   이면 PV 가 명목 지급합을 넘을 수 없다 → 할인 부호반전·PV 과대계상을 잡는다.
+    #   undiscounted 는 INPUT(지급액·rent-free)에서 직접 합산(finance.lease_schedule
+    #   비의존 N-version). rate<0 인 리스는 부등식 부적격 → 그 리스 제외(메모).
+    undisc_sum = 0.0
+    rate_ok = True
+    for lt in data.leases:
+        if lt.discount_rate < 0:
+            rate_ok = False
+            continue
+        rf = set(lt.rent_free_periods)
+        amt = lt.contract.amount_per_period
+        undisc_sum += sum(0.0 if t in rf else amt for t in range(lt.term_periods))
+    if rate_ok:
+        ok_pv = meta["liab0_sum"] <= undisc_sum + 1e-6
+        rep.add("N-version 부채PV ≤ Σ미할인지급(부등식)", ok_pv,
+                "" if ok_pv else "PV=%.6g > 미할인합=%.6g" % (meta["liab0_sum"], undisc_sum))
+    else:
+        rep.add("N-version 부채PV ≤ Σ미할인지급(부등식)", True,
+                "음수 할인율 리스 존재 — 부등식 부적격(skip)")
+
     # 부채 chain: closing(t)=opening(t+1) + closing 식 정합 + 마지막 ≈ 0
     chain_ok = eq_ok = end_ok = True
     for cid, rows in meta["sched"].items():

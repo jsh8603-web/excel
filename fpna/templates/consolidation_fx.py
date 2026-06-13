@@ -19,6 +19,7 @@ import openpyxl
 
 from fpna import house_style as hs
 from fpna import view_contract as vc
+from fpna.conserve import ConserveSpec
 from fpna.dims import Fact
 from fpna.templates.base import QCReport, qc_no_formula_errors
 
@@ -74,6 +75,21 @@ def golden_sample() -> ConsolidationInput:
     return ConsolidationInput(entities=entities,
                               commentary=["US/JP 현지통화 → KRW 환산(평균환율)",
                                           "내부거래 -1,000 = 그룹내 매출 제거(silent net 금지·명시)"])
+
+
+# --------------------------------------------------------------------------- #
+# T4 보존(자문 R2 C6) — 선언형 CONSERVE_SPECS                                  #
+#   raw_sum_fn 은 INPUT(엔티티)에서 stdlib 산술로 grand(연결 총계)를 독립 재계산.#
+#   build 의 _translate 를 부르지 않는다(모듈경계 독립 = N-version). 내부거래   #
+#   제거 엔티티(local_amount 음수)도 동일 환산식에 포함돼 grand 에 net 된다.    #
+# --------------------------------------------------------------------------- #
+CONSERVE_SPECS = [
+    ConserveSpec(
+        "연결총계 = Σ(현지금액×환율)",
+        raw_sum_fn=lambda d: sum(e.local_amount * e.fx_rate for e in d.entities),
+        reported_key="grand",
+    ),
+]
 
 
 # --------------------------------------------------------------------------- #

@@ -19,9 +19,26 @@ from openpyxl.utils import get_column_letter
 
 from fpna import house_style as hs
 from fpna import view_contract as vc
+from fpna.conserve import ConserveSpec
 from fpna.templates.base import QCReport, qc_no_formula_errors
 
 TYPE = "fc_variance_bridge"
+
+
+# --------------------------------------------------------------------------- #
+# T4 보존(자문 R2 C6) — 선언형 CONSERVE_SPECS                                  #
+#   브리지 완전성: base + Σfactor.amount == end_value(잔차 버킷이 차이 흡수).   #
+#   raw 변은 INPUT(base_value + Σfactors)에서 stdlib 합 → 요인 누락/이중계상이  #
+#   end_value 와 불일치로 trip. reported_key = end_value(보고 목표값).          #
+# --------------------------------------------------------------------------- #
+CONSERVE_SPECS = [
+    ConserveSpec(
+        "브리지: base + Σfactor == end",
+        raw_sum_fn=lambda d: d.base_value + sum(f.amount for f in d.factors),
+        reported_key="end_value",
+        tol=0.0,
+    ),
+]
 
 # 고정비 brige 표준 5요인(보고 일관성).
 STANDARD_FACTORS = (
