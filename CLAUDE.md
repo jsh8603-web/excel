@@ -53,15 +53,22 @@ py -S main.py selftest       # -S = site-packages 차단 → vendor/ 동봉본�
 ```
 fpna/_bootstrap.py    vendor/ 주입. 모든 진입점이 최우선 import.
 fpna/house_style.py   룩 SSOT(색·폰트·숫자서식·보더·차트). 룩 변경은 여기 한 곳만.
-fpna/finance.py       순수파이썬 NPV/IRR/payback/CAGR/variance/비율. QC 재계산도 여기 사용.
+fpna/finance.py       순수파이썬 NPV/IRR/payback/CAGR/variance/비율 + solve_revolver(이자↔부채↔현금 순환 고정점). QC 재계산도 여기.
+fpna/coa.py           표준 계정과목 taxonomy(IS/BS/CFS·sign·us_gaap/ifrs tag). refdata/coa_us_gaap.json(공개도메인 명칭, 재무수치 0).
 fpna/ingest/          누더기→tidy. cells→detect→headers→normalize→validate→pipeline 순.
 fpna/profile.py       정제 마트테이블 → 차원없는 SHAPE 스키마(yaml, 8축). ⚠ 누더기는 ingest, 정제 마트는 profile(다른 단계).
 fpna/crypto.py        텍스트 대칭 암복호화(ChaCha20-Poly1305+scrypt). _chacha.py=RFC8439 이식. 메일 본문 운반·part 분할.
-fpna/dispatcher.py    요청 텍스트 + 컬럼 단서 → 템플릿 유형.
+fpna/dispatcher.py    요청 텍스트 → stage(pack/report/ingest/profile/transport/analysis) + 분석표 유형. pack 게이트=resolve_pack.
 fpna/render.py        build → QC 게이트 → (통과 시만) 저장.
 fpna/templates/       유형별 모듈. 각각 INPUT(dataclass)/golden_sample()/build()/qc().
                       __init__.py 의 _MODULES 레지스트리에 등록.
+fpna/pack.py          다중 exhibit 연동 팩(graft 합본 + Control 시트 + run_report 스파인). PackSpec/build_pack.
+fpna/packs/           팩 카탈로그 레지스트리. make_spec()→PackSpec. feasibility(사업타당성) 구현. 가이드=packs.md.
 ```
+
+### 라우팅 레이어 (단일 vs 팩)
+- **단일 의도** → `dispatch.md`(L1): 한 요청 → 한 템플릿. `dispatcher.dispatch` cascade.
+- **연동 묶음** → `packs.md`(L2): 여러 장표가 공유 가정·크로스시트 tie 로 묶일 때. `dispatcher.classify_stage` 가 pack 게이트로 선분류 → `pack.build_pack`(스파인 경유, 모델체크 A=L+E·현금 tie). 단일 exhibit 이면 팩으로 부풀리지 말 것(과투자).
 
 ### ingest 파이프라인 단계 (상세: rules/normalize_rules.md)
 셀 평면화(값+수식 두 번 로드) → 블록 탐지(connected-component+density) → 비데이터 행 격리(제목/단위/각주)

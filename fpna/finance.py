@@ -611,6 +611,123 @@ def allocate_pool(amount: float, weights: dict) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# 순환참조 리볼버 솔버 (R4) — IS-BS-CFS 순환을 파이썬 고정점으로 수렴           #
+#   순환: 이자 = 평균부채 × rate / 부채 = 기초 ± draw·repay / 현금 = 선파이낸싱 #
+#   − 이자 → 이자가 현금을, 현금이 상환·인출을, 상환이 부채를, 부채가 이자를    #
+#   되먹임. 외부 솔버(Excel 반복계산) 없이 ★파이썬이 진실 오라클 — 워크북엔     #
+#   이 수렴값(정적)을 기입하고, 옵션으로 Excel iterate 를 켜 COM 교차검증한다.  #
+# --------------------------------------------------------------------------- #
+@dataclass
+class RevolverResult:
+    periods: list                # 기간별 dict(interest/revolver_draw/revolver_balance/debt_balance/end_cash/repay/avg_debt)
+    converged: bool              # 모든 기간이 eps 내 수렴했는가
+    max_residual: float          # 전 기간 최대 |Δinterest|(마지막 반복)
+    iterations: list = field(default_factory=list)  # 기간별 반복 횟수
+
+
+def solve_revolver(pre_financing, *, beginning_cash: float,
+                   beginning_debt: dict, rates: dict,
+                   min_cash: float = 0.0,
+                   sweep_priority: tuple = ("revolver",),
+                   revolver_key: str = "revolver",
+                   revolver_limit: float = float("inf"),
+                   sweep_enabled: bool = True,
+                   max_iter: int = 200, eps: float = 1e-9) -> RevolverResult:
+    """평균부채 이자 ↔ 부채 ↔ 현금 순환을 기간별 고정점 반복으로 해소.
+
+    pre_financing
+        기간별 선-파이낸싱 현금흐름(영업+투자 CF, 이자·financing 전) 리스트.
+    beginning_cash / beginning_debt / rates
+        기초 현금(float) / 기초 tranche 잔액(dict) / tranche 기간이자율(dict).
+    min_cash
+        최소 보유현금. 선-파이낸싱 현금이 이보다 낮으면 리볼버를 floor 까지 인출.
+    sweep_priority
+        잉여현금 상환 우선순위 tranche 키(예: ("revolver","senior","mezz")).
+    revolver_key / revolver_limit
+        인출 대상 리볼버 tranche 키 / 인출 한도(잔액 상한).
+    sweep_enabled
+        False 면 잉여현금을 상환에 쓰지 않고 현금으로 적재(sweep 토글 off).
+
+    각 기간 고정점: interest 추정 → cash_before_fin = cash + pre − interest →
+      (부족) 리볼버 draw / (잉여) sweep_priority 순 상환 → 기말부채 →
+      평균부채((기초+기말)/2)로 interest 재계산 → |Δ|<eps 까지. 월이자율<1 이면
+      수축사상이라 수렴(max_iter 안전장치).
+
+    반환: 기간별 {interest, revolver_draw, revolver_balance, debt_balance,
+      end_cash, repay(dict), avg_debt}.
+    """
+    debt = dict(beginning_debt)
+    cash = float(beginning_cash)
+    out: list = []
+    iters: list = []
+    max_resid = 0.0
+    all_conv = True
+
+    for pre in pre_financing:
+        opening_debt = dict(debt)
+        opening_rev = opening_debt.get(revolver_key, 0.0)
+        keys = set(opening_debt) | set(rates)
+        # 초기 이자 추정 = 기초잔액 기준(고정점 시드)
+        interest = sum(opening_debt.get(k, 0.0) * rates.get(k, 0.0) for k in keys)
+        new_debt = dict(opening_debt)
+        draw = 0.0
+        repay: dict = {}
+        end_cash = cash
+        avg_debt: dict = {}
+        resid = 0.0
+        conv = False
+        used = 0
+        for used in range(1, max_iter + 1):
+            cash_before_fin = cash + pre - interest
+            new_debt = dict(opening_debt)
+            draw = 0.0
+            repay = {}
+            if cash_before_fin < min_cash:
+                shortfall = min_cash - cash_before_fin
+                room = max(revolver_limit - opening_rev, 0.0)
+                draw = min(shortfall, room)
+                new_debt[revolver_key] = opening_rev + draw
+                end_cash = cash_before_fin + draw
+            else:
+                surplus = (cash_before_fin - min_cash) if sweep_enabled else 0.0
+                remaining = surplus
+                for tr in sweep_priority:
+                    bal = new_debt.get(tr, 0.0)
+                    pay = min(remaining, max(bal, 0.0))
+                    if pay > 0:
+                        new_debt[tr] = bal - pay
+                        repay[tr] = repay.get(tr, 0.0) + pay
+                        remaining -= pay
+                end_cash = cash_before_fin - (surplus - remaining)
+            # 평균부채로 이자 재계산
+            avg_debt = {k: (opening_debt.get(k, 0.0) + new_debt.get(k, 0.0)) / 2.0
+                        for k in (set(opening_debt) | set(new_debt))}
+            interest_new = sum(avg_debt[k] * rates.get(k, 0.0) for k in avg_debt)
+            resid = abs(interest_new - interest)
+            interest = interest_new
+            if resid < eps:
+                conv = True
+                break
+        if not conv:
+            all_conv = False
+        max_resid = max(max_resid, resid)
+        debt = new_debt
+        cash = end_cash
+        iters.append(used)
+        out.append({
+            "interest": interest,
+            "revolver_draw": draw,
+            "revolver_balance": new_debt.get(revolver_key, 0.0),
+            "debt_balance": sum(new_debt.values()),
+            "end_cash": end_cash,
+            "repay": dict(repay),
+            "avg_debt": sum(avg_debt.values()),
+        })
+    return RevolverResult(periods=out, converged=all_conv,
+                          max_residual=max_resid, iterations=iters)
+
+
 __all__ = [
     "npv", "irr", "mirr", "wacc", "discounted_payback", "payback", "cagr",
     "variance", "variance_pct", "safe_div",

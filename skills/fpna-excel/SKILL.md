@@ -76,6 +76,18 @@ description: >
 - **고정비 FP&A 분기**: 위 fc_* + `fpna.dims`(회계 캘린더 역월/4-4-5 + conformed dimension 6축) + `fpna.view_contract`(R1~R11). 상세 = `skills/fpna-fixed-cost-tables/SKILL.md`.
 - **신규 유형 추가**: `fpna/templates/<type>.py`(TYPE/INPUT/golden_sample/build/qc 덕타이핑) → `_MODULES` 등록 → dispatcher 키워드. build=house_style만, qc=finance 재계산+view_contract.
 
+## 2.5 PACK — 여러 장표가 연동된 한 묶음 (stage=pack)
+
+`classify_stage` 가 **pack** 으로 떨어지면 단일 템플릿이 아니라 **연동 묶음**이다. 트리거 =
+타당성·투자심사·중기계획·통합모델·연동·부채 구조조정. 판정 한 줄: **"결과 장표가 서로
+연동돼 한 묶음으로 가나?"** YES면 pack, 단일 의도면 §2(dispatch)로 위임.
+
+- 구현: `fpna/pack.py`(graft 합본 + Control + `run_report` 스파인) + `fpna/packs/`(카탈로그).
+- 명령: `py main.py pack <name> out\pack.xlsx` (구현 팩 = `feasibility` 사업타당성). `resolve_pack` 가 트리거→name.
+- 카탈로그·판정 가이드 = **`packs.md`**(dispatch.md 형제). 미구현 팩은 단일 exhibit 으로 위임.
+- pack 도 §1 필수 경로(스파인 receipt)를 거친다 — 모델체크(A=L+E·현금 tie)·크로스시트 tie 미통과면 저장 불가.
+- ⚠ 과투자 경계: 장표 하나면 팩으로 부풀리지 말 것. 팩은 "연동이 메시지일 때"만.
+
 ## 3. ONLY IF — 특수 포인터 (stage ≠ analysis, 자동 호출 X)
 
 리포트 템플릿이 아니라 스파인 **밖**의 변환·운반이다. §0 stage 판정이 ingest/profile/transport 로 떨어졌을 때만 안내한다. `classify_stage` 가 이 매칭을 키워드로 수행하고 아래 명령(next_command)을 그대로 돌려준다.

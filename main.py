@@ -252,6 +252,36 @@ def cmd_report(args):
     return 1
 
 
+def cmd_pack(args):
+    """다중 exhibit 연동 팩(2-4): packs 레지스트리 make_spec → build_pack(run_report
+    스파인·receipt) → 통과 시만 저장. 우회 시 저장 불가.
+
+    사용: py main.py pack <name> [out.xlsx]
+    """
+    from fpna.packs import get_pack, available
+    from fpna.pack import build_pack
+    if not args:
+        _print("사용: py main.py pack <name> [out.xlsx]")
+        _print("가능: %s" % ", ".join(available())); return 2
+    name = args[0]
+    out = args[1] if len(args) > 1 else "out/pack_%s.xlsx" % name
+    try:
+        mod = get_pack(name)
+    except KeyError as e:
+        _print(str(e)); return 2
+    import os
+    d = os.path.dirname(out)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    res = build_pack(mod.make_spec(), out_path=out)
+    _print(res.qc.summary())
+    if res.saved:
+        _print("저장: %s  (시트 %d개, receipt 발급)" % (out, len(res.wb.worksheets)))
+        return 0
+    _print("QC 미통과(모델체크/크로스시트 tie) → 저장 보류(스파인 우회 불가)")
+    return 1
+
+
 def cmd_golden(args):
     from fpna.templates import available
     from fpna.render import render_golden
@@ -288,6 +318,7 @@ _COMMANDS = {
     "list": cmd_list, "ingest": cmd_ingest, "profile": cmd_profile,
     "encrypt": cmd_encrypt, "decrypt": cmd_decrypt,
     "dispatch": cmd_dispatch, "report": cmd_report, "render": cmd_render,
+    "pack": cmd_pack,
     "golden": cmd_golden, "selftest": cmd_selftest,
 }
 

@@ -40,6 +40,23 @@
 FinPulse-FPA-Model, Financial-Planning-and-Analysis-Project-, financial-analyst-portfolio,
 financial-dashboard-excel, DCF, Copilot-Excel-Finance — 템플릿 유형 아이디어만 참고.
 
+## 학습 참고 — 다중시트 연동 / COA / 3-statement (pack 배선, 2026-06-13)
+
+분류: [V]=런타임 vendor(내 파생 정적데이터) / [L]=학습참고(개념 재구현, 복붙 0) / [I]=영감 / [기각].
+
+| ref | 분류 | repo 위치 | 취한 것 / 이유 |
+|---|---|---|---|
+| FAST Standard | [L] | `fpna/pack.py` Control(Index) 시트 | 색/부호 규약은 house_style 에 이미 있음 → 차용 0. Control 개념만. |
+| Damodaran spreadsheets (stern, 무료·수정가능; ginzu 다탭) | [L] | `fpna/pack.py` 시트 연동 구조 | 다탭 연동 구조 학습. (옵션 `refdata/damodaran_defaults.json` = 집에서 받는 산업 디폴트, 미반입) |
+| 3-statement 순환/리볼버/cash-sweep (WSP·ModelReef·IBA·FME·CFI) | [L] | `fpna/finance.py solve_revolver`(개념) | BS-항등·현금-tie 는 view_contract(tie_out/R11)·pnl_3statement linked 에 이미 있음. 순환 솔버 메커닉만 재구현. |
+| 표준 COA — SEC US-GAAP XBRL Taxonomy(공개도메인) + ifrs-gaap.com(IFRS 구조/명칭) | [L] | `fpna/coa.py` | US-GAAP element 명칭=공개도메인 → tag 사용. IFRS=명칭 참조만(파일 벌크복사 0). |
+| SEC EDGAR XBRL Financial Statement Data Sets(공개도메인) | [V] | `fpna/refdata/coa_us_gaap.json` | 표준 IS/BS/CFS 라인 골격(구조 메타만, ★재무수치 0). 내 파생물. 회사↔집 규율 적합. |
+| PFRAM (IMF·World Bank, 공개 다중시트 연동) | [L] | `fpna/pack.py` 시트 배선/Control · `packs.md` | 시트 연동/Control 구조 학습(매크로 실행 X, 구조만). |
+| Doubletalk (O'Reilly OO 복식부기) | [L] | `fpna/pack.py` `ledger_mode`(옵션, 기본 off) | 원장 posting→BS 구성상 balance 로 plug 회피하는 대안 아이디어. |
+| ModelForge (Whatsonyourmind/modelforge) | [기각/0] | sources.md 기록만 | pydantic/SQLite/anthropic 금지스택 + view_contract/conserve 가 우월. 코드 차용 0. |
+| Flevy / eFinancialModels 통합 PF·타당성 템플릿(유료) | [I] | — | 영감 전용, 차용 0. |
+| (기존·불변) unpivotr/tidyr/Pytheas/ptype/SpreadsheetLLM → ingest, anthropics-skills/CFI/Macabacus/Vertex42 → house_style | [기존] | 위 표 참조 | 이미 기록·구현 완료. 재작업 금지. |
+
 ## 비고
 
 - 학습참고 repo의 실제 clone은 `_sources/`(`.gitignore`, 커밋 금지)에서 수행하며 repo에 포함하지 않는다.

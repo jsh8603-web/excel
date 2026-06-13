@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import fpna._bootstrap  # noqa: F401
 import openpyxl
 
-from fpna import house_style as hs
+from fpna import finance, house_style as hs
 from fpna.templates.base import QCReport, qc_no_formula_errors, qc_totals
 from fpna.view_contract import assert_tie_out, recon_block
 
@@ -244,4 +244,56 @@ def qc(wb, data: PnLInput) -> QCReport:
     return rep
 
 
-__all__ = ["TYPE", "PnLInput", "golden_sample", "build", "qc"]
+# --------------------------------------------------------------------------- #
+# solve_and_link — 순환참조(이자↔현금↔부채) 해소 후 3-statement 연결 (R4)      #
+#   debt_schedule→이자→IS→CFS→BS현금→리볼버 plug 를 finance.solve_revolver 로  #
+#   해소하고, 그 수렴값으로 linked PnLInput 을 구성한다. 결과는 기존 linked     #
+#   tie-out(BS균형·RE roll·CF 간접법)이 그대로 검증한다(회귀 0 — 기존 무변경).  #
+# --------------------------------------------------------------------------- #
+def solve_and_link(*, revenue: float, cogs: float, sga: float, da: float,
+                   tax_rate: float, beginning_debt: dict, debt_rates: dict,
+                   pre_financing_cash: float, cash_begin: float,
+                   re_begin: float, dividends: float, paid_in_capital: float,
+                   min_cash: float = 0.0, sweep_priority: tuple = ("revolver",),
+                   revolver_key: str = "revolver",
+                   revolver_limit: float = float("inf"),
+                   title: str = "손익계산서 (순환연동)",
+                   subtitle: str = "solve_revolver plug — 이자·현금·부채 내생화") -> PnLInput:
+    """순환(이자=평균부채×rate ↔ 현금부족→리볼버 draw ↔ 부채↑→이자↑)을 1기간 고정점으로
+    해소하고, 수렴값(interest/end_cash/debt_balance)으로 균형 잡힌 linked PnLInput 반환.
+
+    pre_financing_cash = 영업+투자 CF(이자·배당·financing 전). 배당은 financing 으로
+    별도 차감(pre 에서 미리 뺀다 → 현금 일관). other_assets·delta_nwc 는 BS균형·CF tie 가
+    정확히 닫히도록 plug 역산(★구조 더미 — 실데이터는 회사에서 실값 입력).
+
+    반환 PnLInput 은 linked=True → build/qc 가 3-statement tie-out 전수 검증.
+    plug 해소 여부는 결과 PnLInput 의 (cash, liabilities) 가 solve 수렴값임으로 확인.
+    """
+    res = finance.solve_revolver(
+        [pre_financing_cash - dividends], beginning_cash=cash_begin,
+        beginning_debt=dict(beginning_debt), rates=dict(debt_rates),
+        min_cash=min_cash, sweep_priority=tuple(sweep_priority),
+        revolver_key=revolver_key, revolver_limit=revolver_limit)
+    p = res.periods[0]
+    interest = p["interest"]
+    cash_end = p["end_cash"]
+    liabilities = p["debt_balance"]
+
+    ebt = revenue - cogs - sga - da - interest
+    ni = ebt - max(0.0, ebt) * tax_rate
+    re_end = re_begin + ni - dividends
+    equity = re_end + paid_in_capital
+    # BS 균형 plug: assets = liabilities + equity, assets = cash_end + other_assets
+    other_assets = liabilities + equity - cash_end
+    # CF 간접법 tie plug: cash_begin + ni + da + delta_nwc − dividends == cash_end
+    delta_nwc = cash_end - cash_begin - ni - da + dividends
+
+    return PnLInput(
+        title=title, subtitle=subtitle, revenue=revenue, cogs=cogs, sga=sga,
+        da=da, interest=interest, tax_rate=tax_rate,
+        dividends=dividends, re_begin=re_begin, cash=cash_end,
+        other_assets=other_assets, liabilities=liabilities,
+        paid_in_capital=paid_in_capital, cash_begin=cash_begin, delta_nwc=delta_nwc)
+
+
+__all__ = ["TYPE", "PnLInput", "golden_sample", "build", "qc", "solve_and_link"]

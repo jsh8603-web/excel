@@ -141,6 +141,12 @@ def dispatch(request_text: str = "", *, columns: list[str] | None = None,
 # --------------------------------------------------------------------------- #
 # (stage, [키워드정규식]) — 위에서부터 우선. analysis 는 fall-through 기본값.
 _STAGE_RULES = [
+    # pack = 여러 장표가 *연동*돼 한 묶음(공유 가정·크로스시트 tie·Control). report 보다
+    # 구체(연동이 메시지)라 최상단. 단일 의도면 아래 cascade(L1)로 위임.
+    ("pack", [r"타당성", r"투자\s*심사", r"사업\s*타당성", r"feasibility", r"중기\s*계획",
+              r"통합\s*모델", r"통합\s*재무", r"연동\s*워크페이퍼", r"연동\s*모델",
+              r"부채\s*구조조정", r"3\s*표\s*연동", r"세\s*개\s*표\s*연동",
+              r"조달.*상환.*민감도", r"연간\s*예산.*연동"]),
     ("report", [r"보드\s*팩", r"보드팩", r"제본", r"다중\s*시트", r"board\s*pack",
                 r"\bpack\b", r"워크페이퍼", r"workpaper", r"크로스\s*시트", r"제본\s*보고"]),
     ("transport", [r"암호화", r"복호화", r"encrypt", r"decrypt", r"메일\s*본문",
@@ -157,9 +163,25 @@ _STAGE_COMMAND = {
     "ingest": "py main.py ingest <파일.xlsx> out/ingest",
     "profile": "py main.py profile <마트.csv> out/profile_spec.yaml",
     "transport": "py main.py encrypt <평문.txt> --mail   (받는 쪽: py main.py decrypt <암호문>)",
+    "pack": "py main.py pack <name> out/pack.xlsx",
     "report": "py main.py report fc_boardpack out/pack.xlsx",
     "analysis": "py main.py dispatch \"<요청>\"  →  py main.py render <type> out/<type>.xlsx",
 }
+
+# pack 트리거 → 구현 카탈로그 name. 미구현 팩은 packs.md 설계만(단일 exhibit 위임 안내).
+_PACK_RULES = [
+    ("feasibility", [r"타당성", r"투자\s*심사", r"사업\s*타당성", r"feasibility",
+                     r"조달.*상환", r"투자\s*검토.*연동"]),
+]
+
+
+def resolve_pack(request_text: str = "") -> str | None:
+    """pack 트리거 텍스트 → 구현된 pack name. 없으면 None(packs.md 카탈로그 참조)."""
+    text = (request_text or "").lower()
+    for name, pats in _PACK_RULES:
+        if any(re.search(p, text) for p in pats):
+            return name
+    return None
 
 
 def classify_stage(request_text: str = "", *, has_messy_file: bool = False,
@@ -173,6 +195,14 @@ def classify_stage(request_text: str = "", *, has_messy_file: bool = False,
     text = (request_text or "").lower()
     for stage, pats in _STAGE_RULES:
         if any(re.search(p, text) for p in pats):
+            if stage == "pack":
+                name = resolve_pack(text)
+                if name:
+                    return "pack", "py main.py pack %s out/pack.xlsx" % name
+                # 트리거는 연동 묶음인데 구현 카탈로그 없음 → packs.md 참조 안내.
+                return "pack", ("연동 묶음 → packs.md 카탈로그 참조. 미구현 팩은 "
+                                "단일 exhibit(dispatch)로 위임. 구현: "
+                                "py main.py pack feasibility out/pack.xlsx")
             return stage, _STAGE_COMMAND[stage]
     # 텍스트 신호 없을 때 파일 단서로 보강: 누더기 파일이면 ingest 가 입력을 만든다.
     if has_messy_file and not has_clean_table:
@@ -205,4 +235,4 @@ def route(request_text: str = "", *, columns: list[str] | None = None,
             "reason": "분석표 → dispatch: %s" % disp.reason}
 
 
-__all__ = ["dispatch", "DispatchResult", "classify_stage", "route"]
+__all__ = ["dispatch", "DispatchResult", "classify_stage", "route", "resolve_pack"]
