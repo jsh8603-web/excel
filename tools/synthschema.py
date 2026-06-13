@@ -1,8 +1,8 @@
 """
-synthschema.py — 스키마(SHAPE yaml)에서 합성 더미를 생성하는 집-전용 도구.
+synthschema.py — 스키마(SHAPE yaml)에서 합성 더미를 생성하는 dev 전용 도구.
 
-⚠ 집 전용(pandas/numpy/pyyaml 의존). 회사 무설치 런타임(fpna/)이 import 하면 안 된다.
-fpna.profile(회사, stdlib)이 뽑은 SHAPE yaml 을 받아 집에서 더미를 만든다 — 한 쌍.
+⚠ dev 전용(pandas/numpy/pyyaml 의존 — vendored 아님). 무설치 런타임(fpna/)이 import 하면 안 된다.
+fpna.profile(stdlib)이 뽑은 SHAPE yaml 을 받아 더미를 만든다 — 한 쌍.
 
 핵심 아이디어: 민감한 건 데이터 '값'이지 '구조(스키마)'가 아니다. 스키마만 정의하면
 그 위에서 그럴듯한 더미로 Power BI 모델·DAX·변환 로직을 집에서 개발하고, 회사에서는
@@ -360,7 +360,7 @@ def to_excel(frames, path):
 # CLI
 # -----------------------------------------------------------------------------
 def _main(argv=None):
-    p = argparse.ArgumentParser(description="SHAPE 스키마 기반 합성 더미 생성기 (집 전용)")
+    p = argparse.ArgumentParser(description="SHAPE 스키마 기반 합성 더미 생성기 (dev 전용)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     g = sub.add_parser("gen", help="SHAPE yaml 에서 더미 생성")
