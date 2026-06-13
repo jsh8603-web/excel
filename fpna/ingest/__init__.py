@@ -9,10 +9,13 @@ from .pipeline import (IngestResult, ingest_workbook, run_ingest,
                        write_tidy_csv, write_schema_json, write_smell_report)
 from .validate import TidyRow, validate_rows, scan_formula_smells
 from .cells import as_cells, Cell
+from .reconcile import (ReconReport, reconcile_sheet, recon_to_smells,
+                        groundtruth_cells)
 
 __all__ = [
     "IngestResult", "ingest_workbook", "run_ingest",
     "write_tidy_csv", "write_schema_json", "write_smell_report",
     "TidyRow", "validate_rows", "scan_formula_smells",
     "as_cells", "Cell",
+    "ReconReport", "reconcile_sheet", "recon_to_smells", "groundtruth_cells",
 ]

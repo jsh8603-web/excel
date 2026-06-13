@@ -45,6 +45,9 @@ _SCALE_SUFFIX_RE = re.compile(
 
 _NUM_RE = re.compile(r"^[\s ]*[(△▲\-+]?[\s]*[\d,]*\.?\d+[\s]*[)%]?[\s]*$")
 _PCT_RE = re.compile(r"%\s*$")
+# A4: 선행0 식별자 — '0' 다음 1자리 이상 숫자(부호/콤마/소수점/단위 없음).
+#   '0001','007' = ID(text 보존). '0' 단독은 미매칭(진짜 0). '10' 도 미매칭.
+_LEADING_ZERO_ID_RE = re.compile(r"^0\d+$")
 _DATE_PATTERNS = [
     re.compile(r"^\d{4}[-/.]\d{1,2}([-/.]\d{1,2})?$"),
     re.compile(r"^\d{4}년\s*\d{1,2}월(\s*\d{1,2}일)?$"),
@@ -215,6 +218,12 @@ def normalize_value_ex(raw, *, fmt: str | None = None, unit_scale: int = 1):
     if low in SENTINELS:
         return None, s, False, 1
 
+    # A4: 선행0 ID(계정코드/사번) 보존 — '0001'/'00123' 은 정수 변환 시 선행0 유실.
+    #   부호·콤마·소수점·접미단위 없는 순수 '0\d+' 만 text 로 보존(값 아님).
+    #   '0'(단독), '0.5'(소수), '-007'(부호) 등은 일반 경로로(숫자/일반 처리).
+    if _LEADING_ZERO_ID_RE.match(s):
+        return s, None, False, 1
+
     # 셀내 접미 스케일 분해('1,234천원' → 본체 '1,234' + scale 1000)
     body, cell_scale = split_cell_scale(s)
     neg = False
@@ -263,6 +272,8 @@ def regex_type(s: str) -> str:
             return "DATE"
     if _PCT_RE.search(s):
         return "PCT"
+    if _LEADING_ZERO_ID_RE.match(s):   # A4: 선행0 ID 는 코드(TEXT)지 수치 아님
+        return "TEXT"
     if _NUM_RE.match(s):
         return "NUM"
     return "TEXT"

@@ -37,6 +37,7 @@ from .headers import (unpivot_block, unmerge_fill, LongRow,
 from .normalize import (normalize_value_ex, parse_unit_label, infer_column_type,
                         scale_for_unit, strip_footnote_marker)
 from .validate import TidyRow, validate_rows, scan_formula_smells, Smell
+from .reconcile import groundtruth_cells, reconcile_sheet, recon_to_smells
 
 _PERIOD_RE = re.compile(r"(\d{4}\s*[-/.년]?\s*(\d{1,2})?\s*(월|분기|Q|H)?|\dQ|[1-4]분기|상반기|하반기)",
                         re.IGNORECASE)
@@ -49,6 +50,7 @@ class IngestResult:
     smells: list = field(default_factory=list)
     report: object = None
     n_blocks: int = 0
+    recon: list = field(default_factory=list)   # A1: 시트별 ReconReport
 
 
 def _looks_like_period(v) -> bool:
@@ -116,7 +118,7 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             out.append(TidyRow(
                 entity=entity, period=period, metric=metric,
                 value=None, unit=unit, row_role=role, level=lr.level,
-                src_row=lr.row, src_col=lr.col,
+                src_sheet=sheet, src_row=lr.row, src_col=lr.col,
                 scale_applied=1, scale_source="none",
                 raw_value=kind, flags="ERROR_CELL",
             ))
@@ -167,7 +169,7 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
         out.append(TidyRow(
             entity=entity, period=period, metric=metric,
             value=value, unit=unit, row_role=role, level=lr.level,
-            src_row=lr.row, src_col=lr.col,
+            src_sheet=sheet, src_row=lr.row, src_col=lr.col,
             scale_applied=scale, scale_source=scale_source,
             raw_value=raw_value, flags=flags,
         ))
@@ -189,15 +191,28 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
 
 
 _ARITH_TOL = 1e-6
+# A0: 합계행 산술 reject 허용오차(반올림 흡수). 상대+절대 둘 다 둔다 —
+#   재무 반올림(천/백만 절사) 누적분을 흡수하되 명백 불일치만 reject.
+#   ★전제: value 는 이미 base(원) 스케일 환산 後 → 천원/원 혼재 오탐 없음.
+_RECONCILE_REL_TOL = 0.005   # 0.5% 상대
+_RECONCILE_ABS_TOL = 1.0     # base(원) 1 절대(반올림 1단위 흡수)
+
+
+def _arith_close(a: float, b: float) -> bool:
+    """합계 정합 판정(상대 0.5% 또는 절대 1 이내)."""
+    return abs(a - b) <= max(_RECONCILE_ABS_TOL, _RECONCILE_REL_TOL * (abs(a) + abs(b)))
 
 
 def _apply_subtotal_and_hierarchy(rows: list[TidyRow], smells: list) -> None:
-    """G5 산술 소계 교집합 + G3 부모==Σ자식 검증(후처리, 결정적).
+    """G5 산술 소계 교집합 + G3 부모==Σ자식 검증 + A0 합계 reject(후처리, 결정적).
 
     - G5: (label·bold·arith) 3신호 중 score≥2 → row_role='subtotal'.
       arith = 같은 (period,metric) 그룹에서 그 행 값 == 나머지 형제 합.
     - G3: 같은 (period,metric) 그룹에서 부모(level L)가 직후 자식(level>L) 합과
       일치하면 PARENT_EQ_CHILDREN_SUM 플래그(이중집계 방지 안전망).
+    - A0: 라벨이 명시 합계/소계인 행이 자식 합과 명백히 어긋나면(허용오차 밖)
+      SUBTOTAL_ARITH_MISMATCH 플래그 → validate 에서 reject(원본 합계오류 차단).
+      ★스케일 정규화 後 비교(value 가 base 환산값) — 천원/원 혼재 오탐 회피.
     """
     def num(r):
         return r.value if isinstance(r.value, (int, float)) and not isinstance(r.value, bool) else None
@@ -254,6 +269,53 @@ def _apply_subtotal_and_hierarchy(rows: list[TidyRow], smells: list) -> None:
                         "PARENT_EQ_CHILDREN_SUM",
                         "부모 %s == Σ자식(%d) — 계층 합 정합" % (pv, len(children))))
 
+        # --- A0 합계행 산술 reject: 명시 합계/소계 라벨이 자식 합과 명백 불일치 ---
+        #   level 계층(부모 들여쓰기 + 자식) 우선, 없으면 평면 형제합으로 폴백.
+        #   허용오차(반올림) 밖이면 SUBTOTAL_ARITH_MISMATCH → validate reject.
+        _flag_subtotal_arith_mismatch(grp_sorted, num, smells)
+
+
+def _flag_subtotal_arith_mismatch(grp_sorted: list, num, smells: list) -> None:
+    """A0: 같은 (period,metric) 그룹에서 명시 합계/소계 행의 산술 불일치 탐지.
+
+    ★보수적: **계층(level) 부모-자식 관계가 명시된 경우만** 비교한다. 들여쓰기로
+    부모(합계/소계 라벨)가 자식보다 얕은 level 이고, 아래에 더 깊은 자식이 ≥2 개
+    이어질 때만 'Σ자식' 을 산출해 대조. 평면 형제합 추정은 무관 행을 합산해
+    오탐(정상 표를 reject)을 내므로 쓰지 않는다.
+
+    후보 = label_is_subtotal 또는 row_role=='subtotal'. 부모값 != Σ자식(허용오차
+    밖)이면 SUBTOTAL_ARITH_MISMATCH 플래그 → validate_rows reject(원본 합계오류 차단).
+    ⚠ 명백 불일치만(허용오차 안 = 침묵). 계층 미형성이면 무동작(reject 안 함).
+    """
+    for idx, cand in enumerate(grp_sorted):
+        cv = num(cand)
+        if cv is None:
+            continue
+        is_cand = (cand.row_role == "subtotal"
+                   or label_is_subtotal(getattr(cand, "_g5_label", "")))
+        if not is_cand:
+            continue
+        # 계층 자식: 후보 아래, 더 깊은 level, 같은/얕은 level 만나면 형제 경계.
+        children = []
+        for child in grp_sorted[idx + 1:]:
+            if child.level > cand.level:
+                if num(child) is not None:
+                    children.append(child)
+            else:
+                break
+        if len(children) < 2:
+            continue  # 계층 미형성 — 비교 근거 없음(오탐 회피, reject 보류)
+        ssum = sum(num(c) for c in children)
+        if _arith_close(cv, ssum):
+            continue  # 정합(반올림 흡수) — 침묵
+        if "SUBTOTAL_ARITH_MISMATCH" not in (cand.flags or ""):
+            cand.flags = (cand.flags + ";SUBTOTAL_ARITH_MISMATCH").strip(";")
+            smells.append(Smell(
+                "R%dC%d" % (cand.src_row, cand.src_col),
+                "SUBTOTAL_ARITH_MISMATCH",
+                "합계 %s != Σ계층자식(%d)=%s — 원본 산술 오류(reject)"
+                % (cv, len(children), ssum)))
+
 
 def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
     """엑셀 파일을 tidy long 으로 변환."""
@@ -268,11 +330,18 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
     schema_blocks = []
     n_blocks = 0
 
+    recon_reports: list = []
     for sn in sheets:
         ws_f = wb_f[sn]
         ws_v = wb_v[sn]
         cells = as_cells(ws_f, ws_v)
         all_smells.extend([asdict_smell(s, sn) for s in scan_formula_smells(cells)])
+
+        # A1: ground-truth 좌표 = 정규화/병합전파 전, parse 와 독립한 단순 스캔.
+        #   unmerge_fill 이 cells 를 in-place 변형하기 전에 좌표집합 + raw값맵을 떠야
+        #   순환(같은 블록탐지 재사용)·오염(병합전파 후 값) 둘 다 회피.
+        sheet_gt = groundtruth_cells(cells)
+        sheet_raw_values = {(c.row, c.col): c.value for c in cells if not c.is_blank}
 
         # 병합셀 값을 영역 내 전파(헤더 해소·블록탐지·제목격리 정확도↑)
         unmerge_fill(cells)
@@ -349,6 +418,13 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
                 "n_long_rows": len(tidy),
             })
 
+        # A1: 시트 단위 per-cell reconciliation(충실도 게이트). GT/raw 는 unmerge 前
+        #   snapshot, tidy 는 이 시트 소속 행만. 결과는 smell 로 노출(reject 와 독립).
+        sheet_tidy = [t for t in all_tidy if t.src_sheet == sn]
+        recon = reconcile_sheet(sn, sheet_gt, sheet_raw_values, sheet_tidy)
+        recon_reports.append(recon)
+        all_smells.extend([asdict_smell(s, sn) for s in recon_to_smells(recon)])
+
     kept, rep = validate_rows(all_tidy, numeric_metric=False)
 
     # 컬럼 타입 추론(스키마 문서화용)
@@ -358,17 +434,27 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
             "metric": "TEXT",
             "value": infer_column_type([r.value for r in kept]),
             "unit": "TEXT", "row_role": "TEXT", "level": "NUM",
-            "src_row": "NUM", "src_col": "NUM",
+            "src_sheet": "TEXT", "src_row": "NUM", "src_col": "NUM",
             "scale_applied": "NUM", "scale_source": "TEXT",
             "raw_value": "TEXT", "flags": "TEXT",
         },
         "blocks": schema_blocks,
         "n_rows": len(kept),
         "n_rejected": rep.n_rejected,
+        # A1: 충실도(per-cell reconciliation) 요약 — 시트별 coverage/mismatch.
+        "reconciliation": [{
+            "sheet": rc.sheet,
+            "n_groundtruth": rc.n_groundtruth,
+            "n_covered": len(rc.covered),
+            "n_missing": len(rc.missing),
+            "n_duplicate": len(rc.duplicate),
+            "n_value_mismatch": len(rc.value_mismatch),
+            "ok": rc.ok,
+        } for rc in recon_reports],
         "generated_by": "fpna.ingest.pipeline",
     }
     return IngestResult(tidy_rows=kept, schema=schema, smells=all_smells,
-                        report=rep, n_blocks=n_blocks)
+                        report=rep, n_blocks=n_blocks, recon=recon_reports)
 
 
 def _detect_dup_keys(block_cells: list, header_rows: list, smells: list) -> None:
@@ -405,7 +491,7 @@ def asdict_smell(s, sheet) -> dict:
 # --------------------------------------------------------------------------
 def write_tidy_csv(rows: list[TidyRow], path: str) -> None:
     cols = ["entity", "period", "metric", "value", "unit",
-            "row_role", "level", "src_row", "src_col",
+            "row_role", "level", "src_sheet", "src_row", "src_col",
             "scale_applied", "scale_source", "raw_value", "flags"]
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.writer(fh)

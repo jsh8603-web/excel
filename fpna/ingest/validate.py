@@ -22,6 +22,7 @@ class TidyRow:
     unit: str | None = None
     row_role: str = "data"        # data|subtotal|total|header
     level: int = 0
+    src_sheet: str | None = None  # A1: 출처 시트명(provenance 1:1 추적)
     src_row: int = 0
     src_col: int = 0
     # 무음 손상 방어 메타(결정적). value 는 base(원) 환산 후 값.
@@ -59,6 +60,9 @@ def validate_rows(rows: list[TidyRow], *, require_period: bool = False,
                 problems.append("value 가 비숫자: %r" % (r.value,))
         if isinstance(r.value, str) and r.value in ERROR_LITERALS:
             problems.append("value 에 수식에러: %s" % r.value)
+        # A0: 합계행 산술 불일치(스케일 정규화 後) → 원본 합계오류 차단(reject).
+        if "SUBTOTAL_ARITH_MISMATCH" in (r.flags or ""):
+            problems.append("합계행 산술 불일치(원본 합계오류)")
         if problems:
             rep.n_rejected += 1
             rep.errors.append("row#%d (src r%d,c%d): %s"
