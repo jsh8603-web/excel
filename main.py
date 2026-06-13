@@ -360,7 +360,14 @@ def main(argv=None) -> int:
     fn = _COMMANDS.get(cmd)
     if not fn:
         _print("알 수 없는 명령: %s" % cmd); _print(__doc__); return 2
-    return fn(argv[1:]) or 0
+    try:
+        return fn(argv[1:]) or 0
+    except FileNotFoundError as e:
+        _print("오류: 파일을 찾을 수 없음: %s" % (getattr(e, "filename", None) or e)); return 1
+    except (ValueError, KeyError) as e:
+        _print("오류: 입력/인자 문제: %s" % e); return 2
+    except Exception as e:  # 미처리 예외도 스택트레이스 대신 한 줄로
+        _print("오류: %s: %s" % (type(e).__name__, e)); return 1
 
 
 if __name__ == "__main__":
