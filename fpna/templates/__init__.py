@@ -30,6 +30,15 @@ _MODULES = {
     "fc_driver_unitcost": "fpna.templates.fc_driver_unitcost",
     "fc_forward_da": "fpna.templates.fc_forward_da",
     "fc_prepaid_rollforward": "fpna.templates.fc_prepaid_rollforward",
+    "fc_lease_ifrs16": "fpna.templates.fc_lease_ifrs16",
+    "fc_allocation": "fpna.templates.fc_allocation",
+    # C3 빠진 템플릿 6 (자문 consult-existing-assets 2b)
+    "pvm_bridge": "fpna.templates.pvm_bridge",
+    "debt_schedule": "fpna.templates.debt_schedule",
+    "consolidation_fx": "fpna.templates.consolidation_fx",
+    "working_capital": "fpna.templates.working_capital",
+    "cost_allocation": "fpna.templates.cost_allocation",
+    "dupont_roic": "fpna.templates.dupont_roic",
 }
 
 

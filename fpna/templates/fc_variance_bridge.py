@@ -36,6 +36,9 @@ class BridgeFactor:
     # C12: timing(기간귀속·phasing) vs permanent(구조적·런레이트) 분류.
     #   "residual" = 잔차 버킷(명시). 미지정 = "permanent"(보수적 기본).
     kind: str = "permanent"   # "timing" | "permanent" | "residual"
+    # C12 FX 분해: amount 중 환율효과(나머지는 현지통화 효과). None=분해 안 함.
+    #   안 하면 환율 변동이 price/요인을 오염(자문 R4 C12). fx_effect ≤ |amount| 권장.
+    fx_effect: float | None = None
 
 
 _FACTOR_KINDS = ("timing", "permanent", "residual")
@@ -63,7 +66,8 @@ def golden_sample() -> FixedCostBridgeInput:
         BridgeFactor("계약변경", +30.0, kind="permanent"),
         BridgeFactor("신규자산 가동", +45.0, kind="permanent"),
         BridgeFactor("일회성(원상복구·중도해지)", -20.0, kind="timing"),
-        BridgeFactor("물가·환율 연동", +12.0, kind="permanent"),
+        # C12 FX 분해: +12 중 +7 이 환율효과(나머지 +5 현지통화). 안 하면 price 오염.
+        BridgeFactor("물가·환율 연동", +12.0, kind="permanent", fx_effect=+7.0),
         BridgeFactor("잔차", +3.0, kind="residual"),
     ]
     end = base + sum(f.amount for f in factors)
@@ -156,6 +160,20 @@ def build(data: FixedCostBridgeInput, *, mode: str = "create", base_path=None) -
         hs.set_cell(ws, kt, 3, val, role="calc", number_format=hs.FMT_INT)
         kt += 1
 
+    # C12 FX 분해: 환율효과 vs 현지통화 효과 분리(안 하면 환율이 요인 오염).
+    fx_sum = sum(f.fx_effect for f in data.factors if f.fx_effect is not None)
+    fx_factors = [f for f in data.factors if f.fx_effect is not None]
+    if fx_factors:
+        local_sum = sum(f.amount - f.fx_effect for f in fx_factors)
+        kt = hs.section_header(ws, kt + 1, "FX 분해 (환율효과 vs 현지통화)", last_col=last_col)
+        for label, val in (("환율효과 (FX)", fx_sum),
+                           ("현지통화 효과 (FX 분해 대상 요인)", local_sum)):
+            hs.set_cell(ws, kt, 1, label, role="label", align=hs.LEFT)
+            hs.set_cell(ws, kt, 3, val, role="calc", number_format=hs.FMT_INT)
+            kt += 1
+    else:
+        local_sum = 0.0
+
     if data.commentary:
         cr = kt + 1
         cr = hs.section_header(ws, cr, "코멘터리", last_col=last_col)
@@ -169,7 +187,8 @@ def build(data: FixedCostBridgeInput, *, mode: str = "create", base_path=None) -
                      prepared_by="FP&A", last_col=last_col)
     wb._fpna_meta = {"out_sum": out_sum, "end_value": data.end_value,
                      "timing_sum": timing_sum, "perm_sum": perm_sum,
-                     "resid_sum": resid_sum}
+                     "resid_sum": resid_sum, "fx_sum": fx_sum,
+                     "fx_local_sum": local_sum}
     return wb
 
 
@@ -207,6 +226,17 @@ def qc(wb: openpyxl.Workbook, data: FixedCostBridgeInput) -> QCReport:
         rep.add("C12 잔차 유의(soft)", True,
                 "잔차/총변동=%.1f%% (>30%% 시 요인 분해 보강 권고)" % (ratio * 100.0)
                 if ratio > 0.30 else "잔차 비중 %.1f%%" % (ratio * 100.0))
+
+    # C12 FX 분해 보존: fx_effect 분리한 요인은 환율효과 + 현지통화 == amount (누수 0).
+    fx_factors = [f for f in data.factors if f.fx_effect is not None]
+    if fx_factors:
+        fx_sum = sum(f.fx_effect for f in fx_factors)
+        local_sum = sum(f.amount - f.fx_effect for f in fx_factors)
+        amt_sum = sum(f.amount for f in fx_factors)
+        ok = abs((fx_sum + local_sum) - amt_sum) < 1e-9
+        rep.add("C12 FX 분해 보존(환율+현지=amount)", ok,
+                "" if ok else "FX 분해 누수 fx=%.6g local=%.6g amount=%.6g"
+                % (fx_sum, local_sum, amt_sum))
 
     # 워터폴 차트 1개 존재
     rep.add("워터폴 차트", len(wb.active._charts) >= 1,

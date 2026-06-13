@@ -91,7 +91,10 @@ def golden_sample_full() -> InvestmentInput:
 
     골든 테스트는 기본 golden_sample() 로 회귀를 보고, 이 변형은 보완 단언 전용.
     """
-    npv_base = finance.npv(0.10, [-1000, 300, 350, 400, 450, 300])
+    # 토네이도 base = *모델 base NPV*(TV 포함 eff_cfs). R9: 민감도 기준이 모델
+    # base 와 정합해야 거짓 헤지를 막는다(stale base 금지).
+    _eff = [-1000, 300, 350, 400, 450, 300 + 200.0]   # TV=200 마지막 기 가산
+    npv_base = finance.npv(0.10, _eff)
     return InvestmentInput(
         title="투자 타당성 분석 (보완 골든)",
         subtitle="MIRR·WACC build·TV·tornado",
@@ -340,6 +343,17 @@ def qc(wb: openpyxl.Workbook, data: InvestmentInput) -> QCReport:
                 "비수치 swing: " + ", ".join(bad) if bad else "")
         rep.add("토네이도 정렬 결정적", swings == swings,  # 결정성 자명
                 "swing 폭 정렬 가능(%d 변수)" % len(swings))
+
+        # --- R9 base=모델base: 각 토네이도 var 의 [low,high] 가 모델 base NPV 를
+        # bracket 하는지(민감도 기준이 모델 base 와 어긋나면 거짓 헤지).
+        base_npv = finance.npv(eff_rate, eff_cfs)
+        unbracketed = [tv.name for tv in data.tornado
+                       if not (min(tv.npv_low, tv.npv_high) <= base_npv
+                               <= max(tv.npv_low, tv.npv_high))]
+        rep.add("R9 토네이도 base=모델 NPV(bracket)", not unbracketed,
+                "" if not unbracketed
+                else "모델base NPV=%.6g 미포함 변수: %s"
+                     % (base_npv, ", ".join(unbracketed)))
 
     rep.add("단위 표기", bool(data.unit))
     return rep

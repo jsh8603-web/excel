@@ -21,12 +21,17 @@ class CashInput:
     unit: str = "₩mn"
     opening: float = 0.0
     weeks: int = 13
-    inflows: list = field(default_factory=list)    # 주별 유입
-    outflows: list = field(default_factory=list)   # 주별 유출
+    inflows: list = field(default_factory=list)    # 주별 유입(집계)
+    outflows: list = field(default_factory=list)   # 주별 유출(집계)
     # --- 주간 연속성(선택) ------------------------------------------------
     # 주별 명시 기초잔액. 주면 각 주 기초 == 직전주 기말 인지 검증(연속성 tie).
     # 비우면 build 와 동일하게 opening 에서 순현금 누적으로 파생(자기 tie).
     openings: list = field(default_factory=list)   # list[float], 길이 = weeks
+    # --- 직접법 granularity(선택) -----------------------------------------
+    # 유입/유출을 항목별로 분해. {항목명: [주별값,...]}. 주면 Σ항목 == 집계
+    # inflows/outflows 인지 tie-out(분개 누락·중복 차단). 비우면 집계만 표시.
+    inflow_lines: dict = field(default_factory=dict)   # {"매출수금": [...], ...}
+    outflow_lines: dict = field(default_factory=dict)  # {"인건비": [...], ...}
 
     def week_balances(self):
         """(openings, closings) 주별 잔액 체인. openings 명시 없으면 연속 파생."""
@@ -42,10 +47,20 @@ class CashInput:
 
 
 def golden_sample() -> CashInput:
+    inflows = [120] * 13
+    outflows = [100, 110, 130, 90, 100, 140, 95, 100, 120, 110, 100, 130, 90]
+    # 직접법 분해: Σ항목 == 집계(매출수금 100 + 기타 20 = 120). 유출은 인건비 60 +
+    # 나머지(매입). 분개 누락·중복 0 인 구조 더미.
+    sales = [100] * 13
+    other_in = [iv - sv for iv, sv in zip(inflows, sales)]   # 20
+    payroll = [60] * 13
+    purchases = [ov - pv for ov, pv in zip(outflows, payroll)]
     return CashInput(
         title="13주 현금흐름 (골든샘플)", subtitle="구조 검증용 — 더미", unit="₩mn",
         opening=500, weeks=13,
-        inflows=[120] * 13, outflows=[100, 110, 130, 90, 100, 140, 95, 100, 120, 110, 100, 130, 90],
+        inflows=inflows, outflows=outflows,
+        inflow_lines={"매출수금": sales, "기타수입": other_in},
+        outflow_lines={"인건비": payroll, "매입대금": purchases},
     )
 
 
@@ -61,13 +76,27 @@ def build(data: CashInput, *, mode="create", base_path=None) -> openpyxl.Workboo
     for w in range(n):
         hs.set_cell(ws, r, 2 + w, "W%d" % (w + 1), role="header")
     r += 1
+    # 직접법 유입 분개(있으면) — 항목별 행, 합은 아래 '유입' 집계와 tie
+    for name, vals in data.inflow_lines.items():
+        hs.set_cell(ws, r, 1, "  " + name, role="soft", align=hs.LEFT)
+        for w in range(n):
+            hs.set_cell(ws, r, 2 + w, vals[w] if w < len(vals) else 0,
+                        role="input", number_format=hs.FMT_INT)
+        r += 1
     in_row = r
-    hs.set_cell(ws, r, 1, "유입", role="label", align=hs.LEFT)
+    hs.set_cell(ws, r, 1, "유입 (계)", role="label", align=hs.LEFT, bold=True)
     for w in range(n):
         hs.set_cell(ws, r, 2 + w, data.inflows[w], role="input", number_format=hs.FMT_INT)
     r += 1
+    # 직접법 유출 분개(있으면)
+    for name, vals in data.outflow_lines.items():
+        hs.set_cell(ws, r, 1, "  " + name, role="soft", align=hs.LEFT)
+        for w in range(n):
+            hs.set_cell(ws, r, 2 + w, vals[w] if w < len(vals) else 0,
+                        role="input", number_format=hs.FMT_INT)
+        r += 1
     out_row = r
-    hs.set_cell(ws, r, 1, "유출", role="label", align=hs.LEFT)
+    hs.set_cell(ws, r, 1, "유출 (계)", role="label", align=hs.LEFT, bold=True)
     for w in range(n):
         hs.set_cell(ws, r, 2 + w, data.outflows[w], role="input", number_format=hs.FMT_INT)
     r += 1
@@ -126,6 +155,22 @@ def qc(wb, data: CashInput) -> QCReport:
     if opens:
         assert_tie_out(rep, opens[0], data.opening, tol=1e-9,
                        name="첫 주 기초 == opening")
+
+    # --- 직접법 분개 tie-out: Σ항목 == 집계 inflows/outflows(주별) ----------
+    # 분개를 주면 누락·중복이 합계를 어긋나게 만든다 → 주별 전수 tie 로 잡는다.
+    def _line_tie(lines, agg, label):
+        if not lines:
+            return
+        breaks = []
+        for w in range(data.weeks):
+            s = sum((vals[w] if w < len(vals) else 0) for vals in lines.values())
+            a = agg[w] if w < len(agg) else 0
+            if abs(s - a) > 1e-9:
+                breaks.append("W%d(Σ=%.0f≠계=%.0f)" % (w + 1, s, a))
+        rep.add("직접법 %s 분개 tie(Σ항목==계)" % label, not breaks,
+                "" if not breaks else "분개 불일치: " + ", ".join(breaks[:6]))
+    _line_tie(data.inflow_lines, data.inflows, "유입")
+    _line_tie(data.outflow_lines, data.outflows, "유출")
 
     # 파이썬 잔액 시뮬 → 최소잔액 음수 경고 (연속 체인 기준)
     min_bal = min([data.opening] + closes) if closes else data.opening

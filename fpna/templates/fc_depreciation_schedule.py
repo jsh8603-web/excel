@@ -42,6 +42,9 @@ class FixedCostDeprInput:
     first_period_factor: dict = field(default_factory=dict)
     # 자산처분: {asset_no: (fy, period)} 처분월부터 D&A 중단·장부가 고정.
     disposals: dict = field(default_factory=dict)
+    # C11 처분손익: {asset_no: 처분가}. 처분손익 = 처분가 − NBV(처분시점 장부가).
+    #   양(+)=처분이익 / 음(−)=처분손실. disposals 와 짝(처분월 없으면 무시).
+    disposal_prices: dict = field(default_factory=dict)
     # 손상(impairment): {asset_no: ((fy, period), carrying_after)} base-reset 이벤트.
     impairments: dict = field(default_factory=dict)
     # R12 활성 window: {asset_no: ((start_fy,p), (end_fy,p) | None)} — 없으면
@@ -154,6 +157,29 @@ def _expected_grid(data: FixedCostDeprInput, periods) -> set:
     return grid
 
 
+def _disposal_gain_loss(data: FixedCostDeprInput, periods, fact) -> list[dict]:
+    """C11 처분손익 = 처분가 − NBV(처분시점 장부가).
+
+    NBV = 처분 period 의 opening(D&A 중단으로 closing=opening 고정). 양=이익/음=손실.
+    disposals + disposal_prices 짝이 있는 자산만.
+    """
+    by_ap = {(r["asset_no"], r["period"]): r for r in fact.rows}
+    by_label = {p.ordinal: p.label for p in periods}
+    out = []
+    for a in data.assets:
+        disp = data.disposals.get(a.asset_no)
+        if disp is None or a.asset_no not in data.disposal_prices:
+            continue
+        disp_ord = disp[0] * 12 + (disp[1] - 1)
+        lbl = by_label.get(disp_ord)
+        nbv = by_ap[(a.asset_no, lbl)]["opening"] if lbl and (a.asset_no, lbl) in by_ap \
+            else a.acq_cost
+        price = data.disposal_prices[a.asset_no]
+        out.append({"asset_no": a.asset_no, "period": lbl, "nbv": nbv,
+                    "price": price, "gain_loss": price - nbv})
+    return out
+
+
 def build(data: FixedCostDeprInput, *, mode: str = "create", base_path=None) -> openpyxl.Workbook:
     cal, periods, fact = _build_fact(data)
     nP = len(periods)
@@ -247,6 +273,24 @@ def build(data: FixedCostDeprInput, *, mode: str = "create", base_path=None) -> 
             hs.set_cell(ws, nxt, 4, row["detail"], role="soft", align=hs.LEFT)
             nxt += 1
 
+    # C11 처분손익 (disposal gain/loss = 처분가 − NBV)
+    disposal_gl = _disposal_gain_loss(data, periods, fact)
+    if disposal_gl:
+        nxt = hs.section_header(ws, nxt + 1, "처분손익 (Disposal Gain/Loss)", last_col=last_col)
+        for j, h in enumerate(("자산", "처분월", "NBV(장부가)", "처분가", "처분손익"), start=1):
+            hs.set_cell(ws, nxt, j, h, role="header", align=hs.LEFT if j == 1 else hs.CENTER)
+        nxt += 1
+        for g in disposal_gl:
+            hs.set_cell(ws, nxt, 1, g["asset_no"], role="label", align=hs.LEFT)
+            hs.set_cell(ws, nxt, 2, g["period"], role="soft", align=hs.CENTER)
+            hs.set_cell(ws, nxt, 3, g["nbv"], role="calc", number_format=hs.FMT_INT)
+            hs.set_cell(ws, nxt, 4, g["price"], role="input", number_format=hs.FMT_INT)
+            hs.set_cell(ws, nxt, 5, g["gain_loss"], role="calc", number_format=hs.FMT_INT)
+            # 손실(음)=빨강 / 이익(양)=초록
+            col = hs.POS_FG if g["gain_loss"] >= 0 else hs.NEG_FG
+            ws.cell(row=nxt, column=5).font = hs.font(col, bold=True)
+            nxt += 1
+
     # 코멘터리
     if data.commentary:
         cr = nxt + 1
@@ -261,7 +305,8 @@ def build(data: FixedCostDeprInput, *, mode: str = "create", base_path=None) -> 
                      prepared_by="FP&A", last_col=last_col)
     wb._fpna_meta = {"cal": cal, "periods": periods, "fact": fact,
                      "master_total": master_total, "gl_total": gl_total,
-                     "anomaly_ledger": ledger, "surfaced_flags": surfaced}
+                     "anomaly_ledger": ledger, "surfaced_flags": surfaced,
+                     "disposal_gl": disposal_gl}
     return wb
 
 
@@ -312,6 +357,14 @@ def qc(wb: openpyxl.Workbook, data: FixedCostDeprInput) -> QCReport:
     # R11 master ↔ GL 대사
     if meta["gl_total"] is not None:
         vc.assert_master_to_gl(rep, meta["master_total"], meta["gl_total"])
+
+    # C11 처분손익 재계산 대조 (처분가 − NBV)
+    gl_ok = True
+    for g in meta.get("disposal_gl", []):
+        if abs(g["gain_loss"] - (g["price"] - g["nbv"])) > 1e-6:
+            gl_ok = False
+    if meta.get("disposal_gl"):
+        rep.add("C11 처분손익 = 처분가 − NBV", gl_ok, "" if gl_ok else "처분손익 재계산 불일치")
 
     rep.add("단위 표기", bool(data.unit), "" if data.unit else "unit 비어있음")
     return rep

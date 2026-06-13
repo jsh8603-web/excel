@@ -519,6 +519,98 @@ def stickiness_proxy(costs: list[float], activity: list[float], *,
     return StickinessResult(up, down, asym, sticky, len(ups), len(downs))
 
 
+# --------------------------------------------------------------------------- #
+# K-IFRS 1116 (IFRS 16) 리스 — 사용권자산·리스부채 상각 (C6 fc_lease_ifrs16)    #
+#   리스부채 = Σ 미래 리스료의 현재가치(증분차입이자율 할인).                   #
+#   매기: 이자 = 기초부채 × 기간할인율 / 부채상각 = 지급액 − 이자 /             #
+#         기말부채 = 기초부채 + 이자 − 지급액.                                  #
+#   사용권자산 = 리스부채(초기) + 선급리스료 − 리스인센티브 + 초기직접원가.     #
+#   사용권자산 상각 = 정액(리스기간). rent-free(무상기간)는 지급액 0 이지만     #
+#   비용은 정액 인식(지급≠비용; 부채는 이자만 증가).                            #
+# --------------------------------------------------------------------------- #
+@dataclass
+class LeaseScheduleRow:
+    period_index: int        # 0-base 기간 인덱스
+    payment: float           # 해당 기간 리스료 지급액(rent-free 면 0)
+    opening_liab: float      # 기초 리스부채
+    interest: float          # 이자(기초부채 × rate)
+    principal: float         # 부채상각(지급−이자)
+    closing_liab: float      # 기말 리스부채
+    rou_open: float          # 기초 사용권자산
+    rou_amort: float         # 사용권자산 상각(정액)
+    rou_close: float         # 기말 사용권자산
+
+
+def lease_liability_pv(payments: list[float], rate: float) -> float:
+    """리스부채 초기 측정 = Σ 지급액 / (1+rate)^(t+1) (기말 지급 가정).
+
+    payments[t] = t 기간(0-base) 리스료. rate = 기간 증분차입이자율.
+    """
+    return sum(p / (1.0 + rate) ** (t + 1) for t, p in enumerate(payments))
+
+
+def lease_schedule(payments: list[float], rate: float, *,
+                   initial_direct_costs: float = 0.0,
+                   prepaid: float = 0.0, incentives: float = 0.0
+                   ) -> list[LeaseScheduleRow]:
+    """K-IFRS 1116 리스 스케줄(부채 상각 + 사용권자산 정액상각).
+
+    부채(t): interest = opening×rate / principal = payment − interest /
+             closing = opening + interest − payment.
+    사용권자산 = 부채초기 + prepaid − incentives + initial_direct_costs,
+             정액상각(리스기간 n). rent-free(payment=0)도 자산상각은 정액(정액화).
+    마지막 기간은 잔액(closing≈0 / rou_close≈0)을 정확히 흡수(부동소수 보정).
+    """
+    n = len(payments)
+    if n == 0:
+        return []
+    liab0 = lease_liability_pv(payments, rate)
+    rou0 = liab0 + prepaid - incentives + initial_direct_costs
+    rou_monthly = rou0 / n
+    rows: list[LeaseScheduleRow] = []
+    liab = liab0
+    rou = rou0
+    for t, pay in enumerate(payments):
+        interest = liab * rate
+        principal = pay - interest                # 부채상각 = 지급 − 이자
+        closing = liab + interest - pay
+        if t == n - 1:
+            closing = 0.0                         # 마지막 기간 잔액 흡수(부동소수 보정)
+        ra = rou_monthly if t < n - 1 else rou    # 마지막 달 ROU 잔여 흡수
+        rows.append(LeaseScheduleRow(
+            period_index=t, payment=pay, opening_liab=liab, interest=interest,
+            principal=principal, closing_liab=closing,
+            rou_open=rou, rou_amort=ra, rou_close=rou - ra))
+        liab = closing
+        rou = rou - ra
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# 공통비 다대다 배부 (C6 fc_allocation) — pool×driver 가중 배부, 보존           #
+# --------------------------------------------------------------------------- #
+def allocate_pool(amount: float, weights: dict) -> dict:
+    """단일 풀 amount 를 weights(key→가중) 비례 배부. Σ배부 == amount(잔여 흡수).
+
+    Σweight ≤ 0 이면 빈 dict(배부 불가 — 호출측이 UNALLOCATED 처리).
+    마지막 key 가 rounding 잔여를 흡수해 보존(Σ=amount).
+    """
+    keys = list(weights.keys())
+    total = sum(max(weights[k], 0.0) for k in keys)
+    if total <= 0:
+        return {}
+    out: dict = {}
+    assigned = 0.0
+    for i, k in enumerate(keys):
+        if i == len(keys) - 1:
+            out[k] = amount - assigned
+        else:
+            a = amount * max(weights[k], 0.0) / total
+            out[k] = a
+            assigned += a
+    return out
+
+
 __all__ = [
     "npv", "irr", "mirr", "wacc", "discounted_payback", "payback", "cagr",
     "variance", "variance_pct", "safe_div",
@@ -533,4 +625,8 @@ __all__ = [
     "variance_decomp_lmdi", "LmdiResult",
     # stickiness proxy (A3 보조)
     "stickiness_proxy", "StickinessResult",
+    # K-IFRS 1116 리스 (C6 fc_lease_ifrs16)
+    "LeaseScheduleRow", "lease_liability_pv", "lease_schedule",
+    # 공통비 다대다 배부 (C6 fc_allocation)
+    "allocate_pool",
 ]

@@ -1,14 +1,19 @@
-"""fpna.templates.budget_build — 예산·인건비 수립(부서별 인원·비용)."""
+"""fpna.templates.budget_build — 예산·인건비 수립(부서별 인원·비용).
+
+깊이(C4): ZBB(영기준) vs incremental(전년대비 증감) 편성방식 구분 — incremental 은
+  baseline(전년) + Δ 로, ZBB 는 0 기준 재산정으로 표시(편성 근거 추적성).
+게이트(C5): R10 부서 roll-up == 총계(assert_tie_out) — 누락 부서 차단.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 import fpna._bootstrap  # noqa: F401
 import openpyxl
-from openpyxl.utils import get_column_letter
 
 from fpna import house_style as hs
-from fpna.templates.base import QCReport, qc_no_formula_errors, qc_totals
+from fpna import view_contract as vc
+from fpna.templates.base import QCReport, qc_no_formula_errors
 
 TYPE = "budget_build"
 
@@ -17,7 +22,9 @@ TYPE = "budget_build"
 class DeptLine:
     dept: str
     headcount: int
-    avg_cost: float        # 1인당 연간 인건비
+    avg_cost: float            # 1인당 연간 인건비
+    method: str = "ZBB"        # "ZBB"(영기준 재산정) | "incremental"(전년+Δ)
+    prior_budget: float = 0.0  # incremental baseline(전년 인건비). ZBB 면 무시.
 
 
 @dataclass
@@ -31,39 +38,64 @@ class BudgetInput:
 def golden_sample() -> BudgetInput:
     return BudgetInput(
         title="예산·인건비 수립 (골든샘플)", subtitle="구조 검증용 — 더미", unit="₩mn",
-        depts=[DeptLine("영업", 10, 60), DeptLine("개발", 20, 80),
-               DeptLine("관리", 5, 55)],
+        depts=[DeptLine("영업", 10, 60, method="incremental", prior_budget=540),
+               DeptLine("개발", 20, 80, method="ZBB"),
+               DeptLine("관리", 5, 55, method="incremental", prior_budget=300)],
     )
 
 
 def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workbook:
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("Budget")
-    last_col = 4
-    hs.set_widths(ws, {1: 20, 2: 12, 3: 16, 4: 16})
+    last_col = 6
+    hs.set_widths(ws, {1: 18, 2: 12, 3: 10, 4: 14, 5: 14, 6: 14})
     r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
                         unit=data.unit, last_col=last_col)
 
-    for j, h in enumerate(["부서 (단위: %s)" % data.unit, "인원", "1인당 비용", "인건비 합"], 1):
+    headers = ["부서 (단위: %s)" % data.unit, "편성방식", "인원", "1인당 비용",
+               "전년 예산", "인건비 합"]
+    for j, h in enumerate(headers, 1):
         hs.set_cell(ws, r, j, h, role="header", align=hs.LEFT if j == 1 else hs.CENTER)
     r += 1
     data_start = r
     for d in data.depts:
         hs.set_cell(ws, r, 1, d.dept, role="label", align=hs.LEFT)
-        hs.set_cell(ws, r, 2, d.headcount, role="input", number_format=hs.FMT_INT)
-        hs.set_cell(ws, r, 3, d.avg_cost, role="input", number_format=hs.FMT_INT)
-        hs.set_cell(ws, r, 4, "=B%d*C%d" % (r, r), role="calc", number_format=hs.FMT_INT)
+        hs.set_cell(ws, r, 2, d.method, role="soft", align=hs.CENTER)
+        hs.set_cell(ws, r, 3, d.headcount, role="input", number_format=hs.FMT_INT)
+        hs.set_cell(ws, r, 4, d.avg_cost, role="input", number_format=hs.FMT_INT)
+        # incremental 만 전년 baseline 표시(ZBB 는 대시 — 0기준 재산정 의미)
+        if d.method == "incremental":
+            hs.set_cell(ws, r, 5, d.prior_budget, role="input", number_format=hs.FMT_INT)
+        else:
+            hs.set_cell(ws, r, 5, "—", role="soft", align=hs.CENTER)
+        hs.set_cell(ws, r, 6, "=C%d*D%d" % (r, r), role="calc", number_format=hs.FMT_INT)
         r += 1
     data_end = r - 1
     # 합계
+    total_row = r
     hs.set_cell(ws, r, 1, "합계", role="total", align=hs.LEFT, bold=True)
-    hs.set_cell(ws, r, 2, "=SUM(B%d:B%d)" % (data_start, data_end), role="calc",
+    hs.set_cell(ws, r, 3, "=SUM(C%d:C%d)" % (data_start, data_end), role="calc",
                 number_format=hs.FMT_INT, bold=True)
-    hs.set_cell(ws, r, 4, "=SUM(D%d:D%d)" % (data_start, data_end), role="calc",
+    hs.set_cell(ws, r, 6, "=SUM(F%d:F%d)" % (data_start, data_end), role="calc",
                 number_format=hs.FMT_INT, bold=True)
     for j in range(1, last_col + 1):
         ws.cell(row=r, column=j).border = hs.BORDER_TOP_STRONG
-    hs.report_footer(ws, r + 2, source="인사 정원 · 인건비 단가표",
+    r += 2
+
+    # incremental 증감 요약(전년 대비 Δ) — 편성 근거 추적
+    inc = [d for d in data.depts if d.method == "incremental"]
+    if inc:
+        r = hs.section_header(ws, r, "Incremental 증감 (전년 대비)", last_col=last_col)
+        for d in inc:
+            cur = d.headcount * d.avg_cost
+            delta = cur - d.prior_budget
+            hs.set_cell(ws, r, 1, d.dept, role="label", align=hs.LEFT)
+            hs.set_cell(ws, r, 2, "전년 %g → 금년 %g (Δ%+g)" % (d.prior_budget, cur, delta),
+                        role="soft", align=hs.LEFT)
+            r += 1
+        r += 1
+
+    hs.report_footer(ws, r, source="인사 정원 · 인건비 단가표 · 전년 예산",
                      prepared_by="FP&A", last_col=last_col)
     return wb
 
@@ -71,10 +103,24 @@ def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workb
 def qc(wb, data: BudgetInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
-    total = sum(d.headcount * d.avg_cost for d in data.depts)
+    per_dept = [d.headcount * d.avg_cost for d in data.depts]
+    total = sum(per_dept)
     hc = sum(d.headcount for d in data.depts)
     rep.add("인원 합 > 0", hc > 0, "hc=%d" % hc)
     rep.add("인건비 합 계산", total >= 0, "합=%.0f" % total)
+
+    # --- R10 부서 roll-up == 총계: Σ부서별 == grand total(누락 부서 차단) ------
+    vc.assert_tie_out(rep, sum(per_dept), total, tol=1e-6, name="R10 dept_rollup_tie")
+
+    # --- 편성방식 유효(ZBB|incremental) + incremental 은 baseline 필수 --------
+    bad_method = [d.dept for d in data.depts if d.method not in ("ZBB", "incremental")]
+    rep.add("편성방식 유효(ZBB|incremental)", not bad_method,
+            "" if not bad_method else "미정의: " + ", ".join(bad_method))
+    no_base = [d.dept for d in data.depts
+               if d.method == "incremental" and d.prior_budget <= 0]
+    rep.add("incremental baseline 명시", not no_base,
+            "" if not no_base else "전년예산 누락: " + ", ".join(no_base))
+
     rep.add("단위 표기", bool(data.unit))
     return rep
 

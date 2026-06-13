@@ -725,5 +725,188 @@ class TestInvestmentAppraisalExt(unittest.TestCase):
                                finance.wacc(600, 400, 0.12, 0.05, 0.22), places=8)
 
 
+class TestPeriodTrendDepth(unittest.TestCase):
+    """period_trend 깊이 — R1 전수·CAGR N 정합·계절지수 평균≈1."""
+
+    def test_golden_invariants(self):
+        from fpna.templates import period_trend as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R1 time_ruler", names)
+        self.assertIn("CAGR N 정합(N=시점-1)", names)
+        self.assertIn("계절지수 평균≈1", names)
+
+    def test_period_gap_fails_r1(self):
+        """캘린더 기간을 건너뛰면(P07 누락) R1 FAIL."""
+        from fpna.templates import period_trend as m
+        data = m.golden_sample()
+        drop = 6
+        periods = [p for i, p in enumerate(data.periods) if i != drop]
+        coords = [c for i, c in enumerate(data.cal_coords) if i != drop]
+        series = {k: [v for i, v in enumerate(vals) if i != drop]
+                  for k, vals in data.series.items()}
+        broken = replace(data, periods=periods, cal_coords=coords, series=series)
+        rep = m.qc(m.build(broken), broken)
+        r1 = [ok for n, ok, _ in rep.checks if n == "R1 time_ruler"]
+        self.assertEqual(r1, [False], "기간 갭인데 R1 통과 — silent 갭 미차단")
+
+
+class TestUnitEconDepth(unittest.TestCase):
+    """unit_economics 깊이 — 할인 기여이익 LTV(특수해 정합 + 시간가치 보정)."""
+
+    def test_golden_invariants(self):
+        from fpna.templates import unit_economics as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("LTV(할인 기여이익) 계산", names)
+        self.assertIn("할인 LTV < 무할인 LTV(시간가치 보정)", names)
+
+    def test_no_discount_equals_simple(self):
+        """할인율 0 이면 닫힌형 LTV == m/churn(현 단순식 특수해)."""
+        from fpna.templates import unit_economics as m
+        data = replace(m.golden_sample(), discount_monthly=0.0)
+        ltv, _ = m.discounted_ltv(data)
+        simple = data.arpu * data.gross_margin / data.churn_monthly
+        self.assertAlmostEqual(ltv, simple, places=6)
+
+    def test_discount_reduces_ltv(self):
+        """할인율 > 0 이면 할인 LTV < 무할인 LTV(과대평가 보정)."""
+        from fpna.templates import unit_economics as m
+        d0 = replace(m.golden_sample(), discount_monthly=0.0)
+        d1 = replace(m.golden_sample(), discount_monthly=0.02)
+        ltv0, _ = m.discounted_ltv(d0)
+        ltv1, _ = m.discounted_ltv(d1)
+        self.assertLess(ltv1, ltv0)
+
+
+class TestBudgetBuildDepth(unittest.TestCase):
+    """budget_build 깊이 — R10 roll-up tie + ZBB/incremental 구분."""
+
+    def test_golden_invariants(self):
+        from fpna.templates import budget_build as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R10 dept_rollup_tie", names)
+        self.assertIn("편성방식 유효(ZBB|incremental)", names)
+        self.assertIn("incremental baseline 명시", names)
+
+    def test_bad_method_fails(self):
+        """편성방식이 ZBB/incremental 외면 FAIL."""
+        from fpna.templates import budget_build as m
+        data = m.golden_sample()
+        depts = [replace(data.depts[0], method="freestyle")] + list(data.depts[1:])
+        broken = replace(data, depts=depts)
+        rep = m.qc(m.build(broken), broken)
+        v = [ok for n, ok, _ in rep.checks if n == "편성방식 유효(ZBB|incremental)"]
+        self.assertEqual(v, [False])
+
+    def test_incremental_without_baseline_fails(self):
+        """incremental 인데 전년예산(baseline) 누락 → FAIL."""
+        from fpna.templates import budget_build as m
+        data = m.golden_sample()
+        depts = [replace(d, prior_budget=0.0) if d.method == "incremental" else d
+                 for d in data.depts]
+        broken = replace(data, depts=depts)
+        rep = m.qc(m.build(broken), broken)
+        v = [ok for n, ok, _ in rep.checks if n == "incremental baseline 명시"]
+        self.assertEqual(v, [False])
+
+
+class TestScenarioDepth(unittest.TestCase):
+    """scenario_sensitivity 깊이 — R9 base=모델base + 동적 스위치."""
+
+    def test_golden_invariants(self):
+        from fpna.templates import scenario_sensitivity as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R9 base=모델base(시나리오 정합)", names)
+        self.assertIn("시나리오 스위치 동적(케이스 분리)", names)
+
+    def test_base_case_equals_model_base(self):
+        """Base 케이스 결과 == base_outcome(모든 드라이버 base 값)."""
+        from fpna.templates import scenario_sensitivity as m
+        data = m.golden_sample()
+        self.assertAlmostEqual(m._case_outcome(data, "Base"), data.base_outcome)
+
+
+class TestRollingForecastBridge(unittest.TestCase):
+    """rolling_forecast 깊이 — 버전 브리지 tie(ΣΔ == Σ현재−Σ직전)."""
+
+    def test_golden_bridge_tie(self):
+        from fpna.templates import rolling_forecast as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("버전 브리지 tie(ΣΔ == Σ현재−Σ직전)", names)
+
+    def test_prior_length_mismatch_fails(self):
+        """직전 전망 길이가 기간 수와 다르면 FAIL."""
+        from fpna.templates import rolling_forecast as m
+        data = m.golden_sample()
+        prior = {k: v[:-1] for k, v in data.prior_series.items()}  # 1기 짧게
+        broken = replace(data, prior_series=prior)
+        rep = m.qc(m.build(broken), broken)
+        v = [ok for n, ok, _ in rep.checks if n == "직전 전망 길이 == 기간 수"]
+        self.assertEqual(v, [False])
+
+
+class TestCashflowDirectMethod(unittest.TestCase):
+    """cashflow_13w 깊이 — 직접법 분개 tie(Σ항목 == 집계)."""
+
+    def test_golden_line_tie(self):
+        from fpna.templates import cashflow_13w as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("직접법 유입 분개 tie(Σ항목==계)", names)
+        self.assertIn("직접법 유출 분개 tie(Σ항목==계)", names)
+
+    def test_line_mismatch_fails(self):
+        """분개 한 주를 어긋나게 만들면 tie FAIL(누락·중복 차단)."""
+        from fpna.templates import cashflow_13w as m
+        data = m.golden_sample()
+        lines = {k: list(v) for k, v in data.inflow_lines.items()}
+        first = next(iter(lines))
+        lines[first][3] += 999.0  # W4 분개만 부풀림
+        broken = replace(data, inflow_lines=lines)
+        rep = m.qc(m.build(broken), broken)
+        v = [ok for n, ok, _ in rep.checks if n == "직접법 유입 분개 tie(Σ항목==계)"]
+        self.assertEqual(v, [False])
+
+
+class TestInvestmentTornadoBase(unittest.TestCase):
+    """investment_appraisal — R9 토네이도 base=모델 NPV(bracket)."""
+
+    def test_full_golden_brackets_base(self):
+        from fpna.templates import investment_appraisal as m
+        data = m.golden_sample_full()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R9 토네이도 base=모델 NPV(bracket)", names)
+
+    def test_stale_base_fails(self):
+        """토네이도 범위가 모델 base NPV 를 bracket 안 하면 FAIL(stale base)."""
+        from fpna.templates import investment_appraisal as m
+        data = m.golden_sample_full()
+        tor = list(data.tornado)
+        # 한 변수의 low/high 를 base NPV 아래로 끌어내려 bracket 깨기
+        tor[0] = replace(tor[0], npv_low=-9999.0, npv_high=-9000.0)
+        broken = replace(data, tornado=tor)
+        rep = m.qc(m.build(broken), broken)
+        v = [ok for n, ok, _ in rep.checks if n == "R9 토네이도 base=모델 NPV(bracket)"]
+        self.assertEqual(v, [False])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

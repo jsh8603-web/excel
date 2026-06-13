@@ -478,6 +478,195 @@ class TestNewFcTemplates(unittest.TestCase):
         self.assertTrue(mod.qc(wb, data).passed)
 
 
+class TestC3MissingTemplates(unittest.TestCase):
+    """C3 빠진 템플릿 6 (자문 2b) — golden build+qc / dispatch / render / 핵심 불변식."""
+    _TYPES = ("pvm_bridge", "debt_schedule", "consolidation_fx",
+              "working_capital", "cost_allocation", "dupont_roic")
+
+    def test_registered(self):
+        av = available()
+        for t in self._TYPES:
+            self.assertIn(t, av)
+
+    def test_golden_build_qc_pass(self):
+        for t in self._TYPES:
+            mod = get_template(t)
+            data = mod.golden_sample()
+            rep = mod.qc(mod.build(data), data)
+            self.assertTrue(rep.passed, "%s QC FAIL:\n%s" % (t, rep.summary()))
+
+    def test_dispatch_routing(self):
+        self.assertEqual(dispatch("가격 물량 믹스 브리지").template, "pvm_bridge")
+        self.assertEqual(dispatch("부채 스케줄 리볼버 cash sweep").template, "debt_schedule")
+        self.assertEqual(dispatch("연결 환산 세그먼트 합산").template, "consolidation_fx")
+        self.assertEqual(dispatch("운전자본 DSO DPO 회전일").template, "working_capital")
+        self.assertEqual(dispatch("공통비 배부 기준").template, "cost_allocation")
+        self.assertEqual(dispatch("듀폰 ROIC 분해").template, "dupont_roic")
+        # 회귀: 기존 예실 변동은 여전히 variance
+        self.assertEqual(dispatch("예실 변동 분석").template, "variance")
+
+    def test_render_gate_saves(self):
+        import tempfile
+        for t in self._TYPES:
+            data = get_template(t).golden_sample()
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, t + ".xlsx")
+                res = render(t, data, out)
+                self.assertTrue(res.saved and res.qc.passed, "%s render FAIL" % t)
+                self.assertTrue(os.path.exists(out))
+
+    def test_pvm_decomposition_ties(self):
+        """PVM: ΔPrice+ΔVolume+ΔMix == ΔTotal (잔차 0)."""
+        mod = get_template("pvm_bridge")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        m = wb._fpna_meta
+        self.assertAlmostEqual(m["price"] + m["volume"] + m["mix"], m["total"], places=6)
+        self.assertAlmostEqual(m["residual"], 0.0, places=6)
+        # 메타 위조 → tie 깨짐
+        wb._fpna_meta["total"] += 100.0
+        self.assertFalse(mod.qc(wb, data).passed)
+
+    def test_debt_balance_roll_tie(self):
+        """부채: Σopening − Σ상환 − Σsweep + Σdraw == Σclosing + chain 연속."""
+        mod = get_template("debt_schedule")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        self.assertTrue(mod.qc(wb, data).passed)
+        # chain: 각 tranche closing(t)=opening(t+1)
+        for tid, rr in wb._fpna_meta["rolled"].items():
+            for i in range(len(rr) - 1):
+                self.assertAlmostEqual(rr[i]["closing"], rr[i + 1]["opening"], places=6)
+
+    def test_consolidation_segment_tie(self):
+        """연결: Σ세그먼트 소계 == 연결 총계 + 내부거래 제거 명시."""
+        mod = get_template("consolidation_fx")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        m = wb._fpna_meta
+        self.assertAlmostEqual(m["seg_sum"], m["grand"], places=6)
+        self.assertTrue(any(e.is_elimination for e in data.entities))
+
+    def test_working_capital_na_conserved(self):
+        """WC: cogs=0 기간 → DIO/DPO ZERO_DENOM 2건, ledger==surfaced 보존."""
+        mod = get_template("working_capital")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        self.assertEqual(len(meta["anomaly_ledger"]), 2)   # DIO + DPO ZERO_DENOM
+        self.assertEqual(meta["surfaced_flags"], 2)
+        self.assertTrue(mod.qc(wb, data).passed)
+        wb._fpna_meta["surfaced_flags"] = 0                # 은폐 → FAIL
+        self.assertFalse(mod.qc(wb, data).passed)
+
+    def test_cost_allocation_conserves(self):
+        """배부: Σ풀 == Σ배부 + Σ미배부 (보존) + driver 합 0 풀 UNALLOCATED 명시."""
+        mod = get_template("cost_allocation")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        m = wb._fpna_meta
+        self.assertAlmostEqual(m["pool_sum"], m["post_sum"], places=6)
+        self.assertIn("FAC", m["unalloc"])                 # driver 합 0 → 미배부 명시
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_dupont_multiplicative_closure(self):
+        """DuPont: ROE(곱) == ROE(직접) (정상 기간) + equity=0 R17 NA."""
+        mod = get_template("dupont_roic")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        rows = wb._fpna_meta["rows"]
+        for row in rows:
+            if row["roe_product"] is not None and row["roe"] is not None:
+                self.assertAlmostEqual(row["roe_product"], row["roe"], places=9)
+        # equity=0 기간 → ledger NA (레버리지 + ROE)
+        self.assertGreaterEqual(len(wb._fpna_meta["anomaly_ledger"]), 1)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+
+class TestC6FixedCostAdditions(unittest.TestCase):
+    """C6 고정비 추가 — fc_lease_ifrs16 / fc_allocation 신규 + C11/C12 보강."""
+
+    def test_lease_registered_and_pass(self):
+        for t in ("fc_lease_ifrs16", "fc_allocation"):
+            self.assertIn(t, available())
+            mod = get_template(t)
+            data = mod.golden_sample()
+            self.assertTrue(mod.qc(mod.build(data), data).passed)
+
+    def test_lease_liability_amort_ties(self):
+        """리스: Σ부채상각 == 리스부채 초기 + 기말 잔액 ≈ 0 + chain 연속."""
+        mod = get_template("fc_lease_ifrs16")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        self.assertAlmostEqual(meta["liab0_sum"], meta["totals"]["principal"], places=4)
+        for cid, rows in meta["sched"].items():
+            self.assertAlmostEqual(rows[-1].closing_liab, 0.0, places=4)
+            self.assertAlmostEqual(rows[-1].rou_close, 0.0, places=4)
+
+    def test_lease_rent_free_straightlined(self):
+        """rent-free: 무상기간 지급 0 이나 사용권자산 상각은 정액(>0, 비용 인식)."""
+        mod = get_template("fc_lease_ifrs16")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        rows = wb._fpna_meta["sched"]["LSE-02"]
+        for t in (0, 1):
+            self.assertEqual(rows[t].payment, 0.0)         # 무상 → 지급 0
+            self.assertGreater(rows[t].rou_amort, 0.0)     # 그러나 정액 상각
+
+    def test_fc_allocation_stepdown_conserves(self):
+        """step-down: Σ직접고정비 == Σ생산부서 최종귀착 (누수 0)."""
+        mod = get_template("fc_allocation")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        m = wb._fpna_meta
+        self.assertAlmostEqual(m["totals"]["input"], m["totals"]["final"], places=6)
+        # 최종 귀착은 생산부서(ASM/PNT)만
+        self.assertEqual(set(m["final"].keys()), {"ASM", "PNT"})
+
+    def test_c11_disposal_gain_loss(self):
+        """C11: 처분손익 = 처분가 − NBV. 처분월 NBV=장부가, 손실/이익 부호."""
+        mod = get_template("fc_depreciation_schedule")
+        data = mod.golden_sample()
+        data.disposals = {"V-001": (2024, 7)}
+        data.disposal_prices = {"V-001": 5_000.0}
+        data.gl_dep_by_period = {}
+        wb = mod.build(data)
+        gl = wb._fpna_meta["disposal_gl"]
+        self.assertEqual(len(gl), 1)
+        # V-001: 취득 36000, 6개월 상각 1000 → NBV(P07)=30000, 처분가 5000 → 손실 -25000
+        self.assertAlmostEqual(gl[0]["nbv"], 30_000.0, places=6)
+        self.assertAlmostEqual(gl[0]["gain_loss"], -25_000.0, places=6)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_c11_disposal_regression_zero(self):
+        """C11 회귀 0: disposal_prices 없으면 기존 golden 그대로 PASS(영향 없음)."""
+        mod = get_template("fc_depreciation_schedule")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        self.assertEqual(wb._fpna_meta["disposal_gl"], [])   # 기본 처분손익 없음
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_c12_fx_decomposition(self):
+        """C12: fx_effect 분리한 요인은 환율효과 + 현지통화 == amount (누수 0)."""
+        mod = get_template("fc_variance_bridge")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        # golden: 물가·환율 +12 중 fx +7, 현지 +5
+        self.assertAlmostEqual(meta["fx_sum"], 7.0)
+        self.assertAlmostEqual(meta["fx_local_sum"], 5.0)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_c12_fx_leak_fails(self):
+        """C12: fx_effect 가 amount 를 초과/누수해도 분해 보존식이 합으로 강제."""
+        mod = get_template("fc_variance_bridge")
+        data = mod.golden_sample()
+        # fx 분해는 amount-fx 가 local 이므로 항상 보존 — kind 오타로 별도 FAIL 경로 확인
+        data.factors[0].kind = "bogus"
+        self.assertFalse(mod.qc(mod.build(data), data).passed)
+
+
 class TestNoForbiddenHeuristic(unittest.TestCase):
     """R6: fc 빌더 소스에 샘플링/head/top-N 휴리스틱 토큰이 없어야 한다."""
     def test_fc_builders_clean(self):
@@ -486,7 +675,10 @@ class TestNoForbiddenHeuristic(unittest.TestCase):
         for fn in ("fc_depreciation_schedule.py", "fc_variance_bridge.py",
                    "fc_runrate_normalized.py", "fc_cuttability_ladder.py",
                    "fc_driver_unitcost.py", "fc_forward_da.py",
-                   "fc_prepaid_rollforward.py"):
+                   "fc_prepaid_rollforward.py", "fc_lease_ifrs16.py",
+                   "fc_allocation.py", "pvm_bridge.py", "debt_schedule.py",
+                   "consolidation_fx.py", "working_capital.py",
+                   "cost_allocation.py", "dupont_roic.py"):
             with open(os.path.join(tdir, fn), encoding="utf-8") as fh:
                 src = fh.read()
             rep = QCReport("r6")

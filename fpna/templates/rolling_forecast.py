@@ -23,6 +23,10 @@ class ForecastInput:
     periods: list = field(default_factory=list)
     actual_until: int = 0           # 인덱스 < actual_until = 실적, 이후 = 전망
     series: dict = field(default_factory=dict)   # {metric: [값,...]}
+    # --- 버전 브리지(선택) ------------------------------------------------
+    # 직전 reforecast 시리즈. 주면 현재(series) vs 직전 차이를 기간별로 브리지
+    # 표기하고 Σ(현재−직전) == (Σ현재 − Σ직전) tie 로 정합 검증(첫 지표 기준).
+    prior_series: dict = field(default_factory=dict)  # {metric: [값,...]}
     # --- R1 시간축 전수성(선택) -------------------------------------------
     # cal_coords 를 주면 periods 가 캘린더 연속 ruler 인지 검증한다(R1).
     # 각 원소 = (fy, period). start/end 사이 결측 기간이 있으면 R1 FAIL.
@@ -52,10 +56,14 @@ def golden_sample() -> ForecastInput:
     # actual_until=6 → P01~P06 실적, P07~P12 전망(컷오버 = P06/P07 경계, 중첩 없음).
     coords = [(2025, p) for p in range(1, 13)]
     periods = ["FY2025-P%02d" % p for p in range(1, 13)]
+    cur = [100, 105, 110, 108, 112, 118, 120, 125, 130, 128, 132, 140]
+    # 직전 reforecast — 전망 구간(P07~)만 차이 나는 구조 더미(실적 구간은 확정 동일).
+    prior = [100, 105, 110, 108, 112, 118, 118, 120, 124, 122, 126, 132]
     return ForecastInput(
         title="롤링 포캐스트 (골든샘플)", subtitle="구조 검증용 — 더미", unit="₩mn",
         periods=periods, actual_until=6,
-        series={"매출": [100, 105, 110, 108, 112, 118, 120, 125, 130, 128, 132, 140]},
+        series={"매출": cur},
+        prior_series={"매출": prior},
         cal_coords=coords,
     )
 
@@ -91,6 +99,29 @@ def build(data: ForecastInput, *, mode="create", base_path=None) -> openpyxl.Wor
     hs.set_cell(ws, r, 2, "=SUM(%s%d:%s%d)" % (fc, data_start, lc, data_start),
                 role="calc", number_format=hs.FMT_INT, bold=True)
     r += 2
+
+    # --- 버전 브리지(직전 reforecast → 현재) — 첫 지표 -----------------------
+    if data.prior_series and data.series:
+        mkey = next(iter(data.series))
+        cur = data.series[mkey]
+        prior = data.prior_series.get(mkey, [])
+        r = hs.section_header(ws, r, "버전 브리지 (직전 reforecast → 현재, %s)" % mkey,
+                              last_col=last_col)
+        # 직전 행
+        hs.set_cell(ws, r, 1, "직전 전망", role="label", align=hs.LEFT)
+        for j in range(len(data.periods)):
+            pv = prior[j] if j < len(prior) else None
+            hs.set_cell(ws, r, 2 + j, pv if pv is not None else "", role="input",
+                        number_format=hs.FMT_INT, fill=hs.FILL_BAND)
+        prior_row = r; r += 1
+        # 차이(현재−직전) 행
+        hs.set_cell(ws, r, 1, "Δ(현재−직전)", role="label", align=hs.LEFT)
+        for j in range(len(data.periods)):
+            col = get_column_letter(2 + j)
+            hs.set_cell(ws, r, 2 + j, "=%s%d-%s%d" % (col, data_start, col, prior_row),
+                        role="calc", number_format=hs.FMT_INT)
+        r += 2
+
     hs.add_line_chart(ws, anchor="A%d" % r, data_min_col=2, data_max_col=last_col,
                       data_min_row=data_start, data_max_row=data_end, cat_col=1,
                       title="실적+전망")
@@ -139,6 +170,23 @@ def qc(wb, data: ForecastInput) -> QCReport:
         rep.add("컷오버 연속(실적끝+1 == 전망시작)", cut_ok,
                 "" if cut_ok else "실적끝=%d 전망시작=%d (컷오버 갭/중첩)"
                 % (max(a_set), min(f_set)))
+
+    # --- 버전 브리지 tie: Σ(현재−직전) == Σ현재 − Σ직전(첫 지표) -------------
+    # 브리지 구간 합이 양끝 차이와 안 맞으면 reforecast 변동요인 중복·누락.
+    if data.prior_series and data.series:
+        from fpna import finance
+        from fpna.view_contract import assert_tie_out
+        mkey = next(iter(data.series))
+        cur = data.series[mkey]
+        prior = data.prior_series.get(mkey, [])
+        npair = min(len(cur), len(prior))
+        sum_delta = sum(cur[j] - prior[j] for j in range(npair))
+        endpoint_delta = sum(cur[:npair]) - sum(prior[:npair])
+        assert_tie_out(rep, sum_delta, endpoint_delta, tol=1e-6,
+                       name="버전 브리지 tie(ΣΔ == Σ현재−Σ직전)")
+        rep.add("직전 전망 길이 == 기간 수", len(prior) == len(data.periods),
+                "" if len(prior) == len(data.periods)
+                else "prior 길이=%d ≠ periods=%d" % (len(prior), len(data.periods)))
 
     rep.add("단위 표기", bool(data.unit))
     return rep
