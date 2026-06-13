@@ -138,6 +138,16 @@ def _base_owned_gate(rep: QCReport, wb, data, template) -> bool:
             name, raw_independent, reported = item
             vc.assert_tie_out(rep, raw_independent, reported, tol=1e-6,
                               name="T4 보존:%s" % name)
+    # 선언형 CONSERVE_SPECS(자문 R2): (raw_sum_fn, reported_key) 만 선언 → 스파인 스윕.
+    # raw_sum_fn 은 모듈경계 독립(build 호출 금지, test_conserve 가 ast 로 강제).
+    specs = getattr(template, "CONSERVE_SPECS", None)
+    if specs:
+        from fpna.conserve import eval_specs
+        for name, lhs, rhs, tol in eval_specs(specs, data, _meta(wb)):
+            if rhs is None:
+                rep.add("T4 보존:%s" % name, False, "reported_key 부재(보고 누락)")
+            else:
+                vc.assert_tie_out(rep, lhs, rhs, tol=tol, name="T4 보존:%s" % name)
     return rep.passed
 
 
@@ -173,6 +183,9 @@ def _render_with_receipt(wb, out_path: str, receipt: GatePass | None, force: boo
             raise RuntimeError("receipt 위조 — 스파인 밖에서 만든 GatePass 입니다.")
         if receipt.qc_hash != _hash_workbook(wb):
             raise RuntimeError("receipt-아티팩트 불일치 — 검증된 wb 와 저장 대상이 다릅니다.")
+    # artifact-gap 완화(자문 C6): openpyxl 은 재계산 안 함 → 수식셀 캐시가 stale/0 일 수
+    # 있다. 열 때 Excel 이 강제 전체 재계산하도록 표시(COM 없이 디스크 수식 안전).
+    wb.calculation.fullCalcOnLoad = True
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     wb.save(out_path)
 
