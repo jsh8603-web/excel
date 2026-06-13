@@ -109,11 +109,9 @@ def build(data: ForwardDaInput, *, mode: str = "create", base_path=None) -> open
     ws = wb.active
     ws.title = hs.safe_sheet_title("ForwardDA")
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  단위 " + data.unit if data.unit else "")).strip(" ·"),
-                       last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col, freeze_col="B")
     header_row = r
-    hs.style_sheet(ws, freeze="B%d" % (header_row + 1))
     hs.set_widths(ws, {1: 22, last_col: 14})
     for c in range(2, last_col):
         ws.column_dimensions[get_column_letter(c)].width = 10
@@ -181,7 +179,10 @@ def build(data: ForwardDaInput, *, mode: str = "create", base_path=None) -> open
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        nxt = cr
 
+    hs.report_footer(ws, nxt + 1, source="CAPEX 계획 · 자산 가동 일정",
+                     prepared_by="FP&A", last_col=last_col)
     wb._fpna_meta = {"cal": cal, "periods": periods, "fact": fact,
                      "projected": projected, "depreciable": depreciable,
                      "delayed": delayed}

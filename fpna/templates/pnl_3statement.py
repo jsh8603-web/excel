@@ -98,9 +98,9 @@ def build(data: PnLInput, *, mode="create", base_path=None) -> openpyxl.Workbook
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("PnL")
     last_col = 2
-    hs.style_sheet(ws, freeze="A5")
     hs.set_widths(ws, {1: 28, 2: 16})
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col)
     hs.set_cell(ws, r, 1, "항목 (단위: %s)" % data.unit, role="header", align=hs.LEFT)
     hs.set_cell(ws, r, 2, "금액", role="header"); r += 1
 
@@ -189,6 +189,8 @@ def build(data: PnLInput, *, mode="create", base_path=None) -> openpyxl.Workbook
             hs.check_cell(ws, r, 2, formula, label=label, label_col=1)
             r += 1
 
+    hs.report_footer(ws, r + 1, source="총계정원장(GL) 마감",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

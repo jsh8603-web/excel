@@ -31,9 +31,9 @@ def build(data: UnitEconInput, *, mode="create", base_path=None) -> openpyxl.Wor
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("UnitEcon")
     last_col = 2
-    hs.style_sheet(ws, freeze="A5")
     hs.set_widths(ws, {1: 26, 2: 14})
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col)
 
     # 입력
     r = hs.section_header(ws, r, "입력 (단위: %s)" % data.unit, last_col=last_col)
@@ -67,6 +67,8 @@ def build(data: UnitEconInput, *, mode="create", base_path=None) -> openpyxl.Wor
     hs.set_cell(ws, r, 2, "=IF(%s*%s=0,\"\",%s/(%s*%s))" % (arpu_c, gm_c, cac_c, arpu_c, gm_c),
                 role="calc", number_format=hs.FMT_NUM1)
     r += 1
+    hs.report_footer(ws, r + 1, source="과금 · 코호트 지표",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

@@ -10,11 +10,30 @@ fpna.house_style — 맥킨지/회계법인 룩 단일 SSOT.
 핵심 규약
 ---------
 - 숫자: 음수 괄호 `#,##0;(#,##0)`, % `0.0%`. 단위는 헤더에 명시(₩mn 등).
+  백만 단위 스케일은 `FMT_INT_MN`(원값 두고 `,,` 로 표시만 ÷1e6).
 - 무채색 본문 + 단일 액센트 1색.
-- 입력셀=파랑 글씨, 계산셀=검정 글씨(IB 관례), 링크셀=초록.
+- 입력셀=파랑 글씨, 계산셀=검정 글씨(IB 4색 관례), 링크셀=초록, 외부참조=빨강.
 - gridlines off, 본문 9~10pt sans(맑은 고딕/Calibri).
 - 항목 좌측·숫자 우측·들여쓰기 계층. 합계는 상단 단일 보더.
+- tie-out check 셀은 ≠0(또는 |x|>tol)이면 적색 강조(`check_cell`, CellIsRule).
 - variance bridge = 누적 막대 + base 시리즈 투명(fill=none) 트릭.
+
+표준 레이아웃 규칙 (report_frame / report_footer)
+------------------------------------------------
+파이프라인 등록 테이블은 아래 골격으로 통일한다(레이아웃 일관성 = 신뢰성).
+
+  ① 제목 블록 (title / subtitle)
+  ② 메타 헤더 (단위 · 통화 · 회계기준 · 기준일 — 숫자 해석 모호성 제거)
+  ③ 본문 (표 / 차트)
+  ④ _RECON 대사 (completeness / accuracy / cutoff — view_contract.recon_block)
+  ⑤ 출처 footer (Source / Note / Prepared by — 감사 추적성)
+  ⑥ page_setup (반복 헤더 · 가로폭 맞춤 · 페이지/날짜 푸터)
+
+  + gridlines off · freeze_panes(헤더 고정).
+
+`report_frame` 이 ①②③의 머리(①②+style_sheet)와 freeze 를 일괄 적용하고
+본문 시작 행을 반환한다. ④_RECON 은 템플릿별 대사 의미가 달라 본문에서 직접
+그리며, `report_footer` 가 ⑤⑥을 묶어 마감한다.
 """
 from __future__ import annotations
 
@@ -390,6 +409,71 @@ def source_footer(ws: Worksheet, row: int, *, source: str = "", note: str = "",
         c.alignment = LEFT_WRAP
         r += 1
     return r
+
+
+# --------------------------------------------------------------------------
+# 10b. 표준 레이아웃 골격 — report_frame / report_footer
+# --------------------------------------------------------------------------
+# 파이프라인 등록 템플릿(variance / fc_* 등)이 제각각 그리던 머리·꼬리 골격을
+# 한 곳으로 통일한다. 호출측 build 는 frame→[본문]→footer 순서만 지키면
+# 모든 산출물의 룩(제목블록·메타헤더·gridlines off·출처footer·인쇄설정)이 일관된다.
+#
+#   row = hs.report_frame(ws, title, subtitle=..., unit="₩mn", as_of="2026-05-31",
+#                         last_col=6)
+#   ... 본문(표/차트/_RECON)을 row 부터 그림. nxt = 본문 다음 행 ...
+#   hs.report_footer(ws, nxt, source="GL export", prepared_by="FP&A", last_col=6)
+#
+# _RECON(completeness/accuracy/cutoff) 대사 블록은 view_contract.recon_block 로
+# 본문에서 그리므로 frame 이 떠안지 않는다(템플릿별 대사 의미가 달라 호출측 책임).
+def report_frame(ws: Worksheet, title: str, *, subtitle: str = "",
+                 unit: str = "", currency: str = "", period_basis: str = "",
+                 as_of: str = "", last_col: int = 6,
+                 freeze=True, freeze_col: str = "A", zoom: int = 100) -> int:
+    """표준 머리 골격을 일괄 적용하고 본문 시작 행을 반환한다.
+
+    title_block → (unit/currency/period_basis/as_of 중 하나라도 있으면) meta_header
+    → style_sheet(gridlines off · freeze) 순으로 적용한다.
+
+    freeze 인자:
+      - True  → 본문 헤더 다음 행(첫 데이터 행)에서 freeze. 고정 열은 freeze_col
+                ("A"=행만 고정, "B"=좌측 1열도 고정 — 라벨열 보존용).
+      - False → freeze 안 함.
+      - str   → 명시 좌표("B7" 등)로 freeze(완전 수동).
+
+    본문은 반환행(=헤더 행)부터 그리고, 마감은 report_footer 로 한다. set_widths 는
+    표 폭이 템플릿마다 달라 호출측이 별도로 지정한다(frame 은 골격만 통일).
+    """
+    r = title_block(ws, title, subtitle, last_col=last_col)
+    if any((unit, currency, period_basis, as_of)):
+        r = meta_header(ws, r, unit=unit, currency=currency,
+                        period_basis=period_basis, as_of=as_of, last_col=last_col)
+    # 본문 헤더 행은 반환행(r). freeze 는 그 다음 행(첫 데이터 행) 기준.
+    if isinstance(freeze, str):
+        fz = freeze
+    elif freeze:
+        fz = "%s%d" % (freeze_col, r + 1)
+    else:
+        fz = None
+    style_sheet(ws, freeze=fz, zoom=zoom)
+    return r
+
+
+def report_footer(ws: Worksheet, row: int, *, source: str = "", note: str = "",
+                  prepared_by: str = "", last_col: int = 6,
+                  title_rows: str | None = "1:2",
+                  print_area: str | None = None,
+                  footer_text: str | None = None) -> int:
+    """표준 꼬리 골격 — source_footer + page_setup_report 를 묶어 마감한다.
+
+    출처·주석·작성자 푸터를 그린 뒤 인쇄 설정(반복 헤더·가로폭 맞춤·페이지 푸터)을
+    적용한다. 출처가 모두 비어 있으면 푸터 줄은 생략하되 page_setup 은 적용한다.
+    반환 = 푸터 다음 행.
+    """
+    nxt = source_footer(ws, row, source=source, note=note,
+                        prepared_by=prepared_by, last_col=last_col)
+    page_setup_report(ws, title_rows=title_rows, print_area=print_area,
+                      footer=footer_text)
+    return nxt
 
 
 # --------------------------------------------------------------------------

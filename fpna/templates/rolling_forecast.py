@@ -64,9 +64,9 @@ def build(data: ForecastInput, *, mode="create", base_path=None) -> openpyxl.Wor
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("Forecast")
     n = len(data.periods); last_col = 1 + n
-    hs.style_sheet(ws, freeze="B5")
     hs.set_widths(ws, {1: 18, **{j: 11 for j in range(2, last_col + 1)}})
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col, freeze_col="B")
 
     hs.set_cell(ws, r, 1, "지표 (단위: %s)" % data.unit, role="header", align=hs.LEFT)
     for j, p in enumerate(data.periods, start=2):
@@ -94,6 +94,8 @@ def build(data: ForecastInput, *, mode="create", base_path=None) -> openpyxl.Wor
     hs.add_line_chart(ws, anchor="A%d" % r, data_min_col=2, data_max_col=last_col,
                       data_min_row=data_start, data_max_row=data_end, cat_col=1,
                       title="실적+전망")
+    hs.report_footer(ws, r + 16, source="실적 + 전망(롤링)",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

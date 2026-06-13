@@ -88,10 +88,8 @@ def build(data: FixedCostBridgeInput, *, mode: str = "create", base_path=None) -
     last_col = 4
     hs.set_widths(ws, {1: 28, 2: 12, 3: 12, 4: 12})
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  단위 " + data.unit if data.unit else "")).strip(" ·"),
-                       last_col=last_col)
-    hs.style_sheet(ws, freeze="A%d" % (r + 1))
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col)
 
     # 워터폴 보조영역(cat / base 투명받침 / value) + 누적 표시
     hs.section_header(ws, r, "변동 브리지 (Bridge)", last_col=last_col)
@@ -165,7 +163,10 @@ def build(data: FixedCostBridgeInput, *, mode: str = "create", base_path=None) -
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        kt = cr
 
+    hs.report_footer(ws, kt + 1, source="고정비 원장 · 약정 등록부",
+                     prepared_by="FP&A", last_col=last_col)
     wb._fpna_meta = {"out_sum": out_sum, "end_value": data.end_value,
                      "timing_sum": timing_sum, "perm_sum": perm_sum,
                      "resid_sum": resid_sum}

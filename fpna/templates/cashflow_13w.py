@@ -53,9 +53,9 @@ def build(data: CashInput, *, mode="create", base_path=None) -> openpyxl.Workboo
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("Cash13W")
     n = data.weeks; last_col = 1 + n
-    hs.style_sheet(ws, freeze="B6")
     hs.set_widths(ws, {1: 18, **{j: 9 for j in range(2, last_col + 1)}})
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col, freeze_col="B")
 
     hs.set_cell(ws, r, 1, "항목 (단위: %s)" % data.unit, role="header", align=hs.LEFT)
     for w in range(n):
@@ -93,6 +93,8 @@ def build(data: CashInput, *, mode="create", base_path=None) -> openpyxl.Workboo
     hs.add_line_chart(ws, anchor="A%d" % r, data_min_col=2, data_max_col=last_col,
                       data_min_row=bal_row, data_max_row=bal_row, cat_col=1,
                       title="주간 잔액(유동성)")
+    hs.report_footer(ws, r + 16, source="자금 수지 계획(주간)",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

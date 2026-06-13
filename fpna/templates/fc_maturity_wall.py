@@ -106,10 +106,8 @@ def build(data: MaturityWallInput, *, mode: str = "create", base_path=None) -> o
     ws.title = hs.safe_sheet_title("MaturityWall")
     last_col = 6
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  기준 " + ref_cd.isoformat())).strip(),
-                       last_col=last_col)
-    hs.style_sheet(ws, freeze="A%d" % (r + 1))
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, as_of=ref_cd.isoformat(), last_col=last_col)
     hs.set_widths(ws, {1: 10, 2: 18, 3: 10, 4: 12, 5: 12, 6: 12})
 
     headers = ["계약", "거래처", "계정", "잔여(월)", "만기", "연환산"]
@@ -161,7 +159,10 @@ def build(data: MaturityWallInput, *, mode: str = "create", base_path=None) -> o
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        r = cr
 
+    hs.report_footer(ws, r + 1, source="계약 마스터(약정 등록부)",
+                     prepared_by="FP&A", last_col=last_col)
     wb._fpna_meta = {"bucket_tot": bucket_tot, "grand": grand,
                      "active_total": sum(x["annualized"] for x in rows)}
     return wb

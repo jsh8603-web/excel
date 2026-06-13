@@ -40,9 +40,9 @@ def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workb
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("Budget")
     last_col = 4
-    hs.style_sheet(ws, freeze="A5")
     hs.set_widths(ws, {1: 20, 2: 12, 3: 16, 4: 16})
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col)
 
     for j, h in enumerate(["부서 (단위: %s)" % data.unit, "인원", "1인당 비용", "인건비 합"], 1):
         hs.set_cell(ws, r, j, h, role="header", align=hs.LEFT if j == 1 else hs.CENTER)
@@ -63,6 +63,8 @@ def build(data: BudgetInput, *, mode="create", base_path=None) -> openpyxl.Workb
                 number_format=hs.FMT_INT, bold=True)
     for j in range(1, last_col + 1):
         ws.cell(row=r, column=j).border = hs.BORDER_TOP_STRONG
+    hs.report_footer(ws, r + 2, source="인사 정원 · 인건비 단가표",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

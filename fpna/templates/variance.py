@@ -72,12 +72,10 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
     ws = wb.active
     ws.title = hs.safe_sheet_title("Variance")
     last_col = 5
-    hs.style_sheet(ws, freeze="A6")
     hs.set_widths(ws, {1: 28, 2: 14, 3: 14, 4: 14, 5: 12})
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  " + data.period if data.period else ""))
-                       .strip(" ·"), last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, period_basis=data.period, last_col=last_col)
 
     # 헤더 행
     headers = ["항목 (단위: %s)" % data.unit, "계획", "실적", "Δ", "Δ%"]
@@ -155,6 +153,7 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
                      cat_col=1, title="예실 브리지")
 
     # 코멘터리
+    foot = bridge_data_end + 2
     if data.commentary:
         cr = bridge_data_end + 2
         cr = hs.section_header(ws, cr, "코멘터리", last_col=last_col)
@@ -162,6 +161,10 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        foot = cr
+
+    hs.report_footer(ws, foot + 1, source="계획(예산) · 실적(GL)",
+                     prepared_by="FP&A", last_col=last_col)
 
     # 메타(QC 가 읽을 좌표 기록)
     wb._fpna_meta = {

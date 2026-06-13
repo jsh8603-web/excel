@@ -57,11 +57,9 @@ def build(data: BoardInput, *, mode="create", base_path=None) -> openpyxl.Workbo
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("BoardKPI")
     last_col = 6
-    hs.style_sheet(ws, freeze="A6")
     hs.set_widths(ws, {1: 22, 2: 14, 3: 14, 4: 12, 5: 10, 6: 12})
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  " + data.period if data.period else "")).strip(" ·"),
-                       last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        period_basis=data.period, last_col=last_col)
     for j, h in enumerate(["KPI", "실적", "목표", "달성", "상태", "출처대사"], 1):
         hs.set_cell(ws, r, j, h, role="header", align=hs.LEFT if j == 1 else hs.CENTER)
     r += 1
@@ -82,6 +80,8 @@ def build(data: BoardInput, *, mode="create", base_path=None) -> openpyxl.Workbo
         # 출처대사 check 셀: 표기 실적(B) − 출처값 = 0 이어야(≠0 적색).
         hs.check_cell(ws, r, 6, "=B%d-%r" % (r, float(_src(k))), number_format=fmt)
         r += 1
+    hs.report_footer(ws, r + 1, source="재무 모델 · KPI 정의서",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

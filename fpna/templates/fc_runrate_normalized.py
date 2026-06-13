@@ -104,11 +104,9 @@ def build(data: RunRateInput, *, mode: str = "create", base_path=None) -> openpy
     ws = wb.active
     ws.title = hs.safe_sheet_title("RunRate")
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  단위 " + data.unit if data.unit else "")).strip(" ·"),
-                       last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col, freeze_col="B")
     header_row = r
-    hs.style_sheet(ws, freeze="B%d" % (header_row + 1))
     hs.set_widths(ws, {1: 26})
     for c in range(2, last_col + 1):
         ws.column_dimensions[get_column_letter(c)].width = 11
@@ -180,6 +178,7 @@ def build(data: RunRateInput, *, mode: str = "create", base_path=None) -> openpy
     rec_top = total_row + 2
     hs.section_header(ws, rec_top, "대사 (Reconciliation)", last_col=last_col)
     hs.write_matrix(ws, rec_top + 1, 1, ["대사 항목", "값"], recon, value_fmt=hs.FMT_INT)
+    end_row = rec_top + len(recon) + 1
 
     if data.commentary:
         cr = rec_top + len(recon) + 3
@@ -189,6 +188,10 @@ def build(data: RunRateInput, *, mode: str = "create", base_path=None) -> openpy
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        end_row = cr
+
+    hs.report_footer(ws, end_row + 1, source="고정비 원장(월별)",
+                     prepared_by="FP&A", last_col=last_col)
 
     # ⚠ one-off 마스킹은 anomaly 가 아니라 정상 정규화 절차 → anomaly_ledger 미노출.
     #   (spine _base_owned_gate 의 anomaly_conserved 는 ledger 노출 시에만 작동.)

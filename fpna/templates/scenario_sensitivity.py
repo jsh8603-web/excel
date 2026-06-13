@@ -44,9 +44,9 @@ def build(data: ScenarioInput, *, mode="create", base_path=None) -> openpyxl.Wor
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = hs.safe_sheet_title("Scenario")
     last_col = 4
-    hs.style_sheet(ws, freeze="A6")
     hs.set_widths(ws, {1: 18, 2: 14, 3: 14, 4: 14})
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col)
     hs.set_cell(ws, r, 1, "Base 결과 (단위: %s)" % data.unit, role="label", align=hs.LEFT)
     hs.set_cell(ws, r, 2, data.base_outcome, role="input", number_format=hs.FMT_INT, bold=True)
     r += 2
@@ -74,6 +74,8 @@ def build(data: ScenarioInput, *, mode="create", base_path=None) -> openpyxl.Wor
     hs.add_bar_chart(ws, anchor="A%d" % r, data_min_col=4, data_max_col=4,
                      data_min_row=data_start, data_max_row=data_end, cat_col=1,
                      title="토네이도(스윙 크기)")
+    hs.report_footer(ws, r + 16, source="시나리오 가정 · 민감도 동인",
+                     prepared_by="FP&A", last_col=last_col)
     return wb
 
 

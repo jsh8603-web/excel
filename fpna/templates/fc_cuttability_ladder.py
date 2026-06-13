@@ -134,10 +134,8 @@ def build(data: CuttabilityInput, *, mode: str = "create", base_path=None) -> op
     ws = wb.active
     ws.title = hs.safe_sheet_title("Cuttability")
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + "  ·  기준 " + as_of.isoformat()).strip(),
-                       last_col=last_col)
-    hs.style_sheet(ws, freeze="A%d" % (r + 1))
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, as_of=as_of.isoformat(), last_col=last_col)
     hs.set_widths(ws, {1: 10, 2: 16, 3: 12, 4: 10, 5: 12, 6: 12, 7: 12})
 
     headers = ["약정", "거래처", "연환산", "해지(월)", "연절감", "위약금", "순절감"]
@@ -205,7 +203,10 @@ def build(data: CuttabilityInput, *, mode: str = "create", base_path=None) -> op
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        r = cr
 
+    hs.report_footer(ws, r + 1, source="약정 등록부 · 해지 조건표",
+                     prepared_by="FP&A", last_col=last_col)
     # 내부 tidy fact (grain = 1 약정)
     fact = Fact("1행 = 1 약정", ("contract_id",),
                 [{"contract_id": x["contract_id"], "rung": x["rung"],

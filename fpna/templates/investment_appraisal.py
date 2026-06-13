@@ -44,13 +44,13 @@ def build(data: InvestmentInput, *, mode: str = "create", base_path=None) -> ope
     ws = wb.active
     ws.title = hs.safe_sheet_title("Investment")
     last_col = 2 + len(data.cashflows)
-    hs.style_sheet(ws, freeze="B6")
     widths = {1: 22}
     for j in range(2, last_col + 1):
         widths[j] = 12
     hs.set_widths(ws, widths)
 
-    r = hs.title_block(ws, data.title, data.subtitle, last_col=last_col)
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col, freeze_col="B")
 
     # 가정 블록
     r = hs.section_header(ws, r, "가정", last_col=last_col)
@@ -131,6 +131,8 @@ def build(data: InvestmentInput, *, mode: str = "create", base_path=None) -> ope
                 role="calc", number_format=hs.FMT_NUM1, bold=True)
     r += 1
 
+    hs.report_footer(ws, r + 1, source="CAPEX 제안 · 현금흐름 가정",
+                     prepared_by="FP&A", last_col=last_col)
     wb._fpna_meta = {"npv_cell": npv_cell, "cashflows": data.cashflows,
                      "rate": data.discount_rate}
     return wb

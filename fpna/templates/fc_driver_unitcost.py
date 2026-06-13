@@ -97,10 +97,8 @@ def build(data: DriverUnitCostInput, *, mode: str = "create", base_path=None) ->
     ws = wb.active
     ws.title = hs.safe_sheet_title("DriverUnitCost")
 
-    r = hs.title_block(ws, data.title,
-                       (data.subtitle + ("  ·  단위 " + data.unit if data.unit else "")).strip(" ·"),
-                       last_col=last_col)
-    hs.style_sheet(ws, freeze="A%d" % (r + 1))
+    r = hs.report_frame(ws, data.title, subtitle=data.subtitle,
+                        unit=data.unit, last_col=last_col)
     hs.set_widths(ws, {1: 26, 2: 12, 3: 10, 4: 8, 5: 12, 6: 10})
 
     headers = ["비용 라인", "고정비", "동인수량", "단위", "단위원가", "사유(NA)"]
@@ -171,7 +169,10 @@ def build(data: DriverUnitCostInput, *, mode: str = "create", base_path=None) ->
             hs.set_cell(ws, cr, 1, "• " + line, role="soft", align=hs.LEFT_WRAP)
             ws.merge_cells(start_row=cr, start_column=1, end_row=cr, end_column=last_col)
             cr += 1
+        r = cr
 
+    hs.report_footer(ws, r + 1, source="고정비 원장 · 동인 마스터",
+                     prepared_by="FP&A", last_col=last_col)
     fact = Fact("1행 = 1 CC × 1 Account × 1 driver_type",
                 ("cost_center", "account", "driver_type"),
                 [{"cost_center": x["line"].cost_center, "account": x["line"].account,
