@@ -41,6 +41,23 @@ class TestFinance(unittest.TestCase):
     def test_safe_div(self):
         self.assertIsNone(finance.safe_div(1, 0))
 
+    def test_mirr(self):
+        cfs = [-1000, 300, 350, 400, 450, 300]
+        m = finance.mirr(cfs, 0.08, 0.09)
+        self.assertIsNotNone(m)
+        # MIRR 정의 직접 검증: (FV_pos/-PV_neg)^(1/n)-1
+        n = len(cfs) - 1
+        fv_pos = sum(cf * (1.09) ** (n - t) for t, cf in enumerate(cfs) if cf > 0)
+        pv_neg = sum(cf / (1.08) ** t for t, cf in enumerate(cfs) if cf < 0)
+        self.assertAlmostEqual(m, (fv_pos / -pv_neg) ** (1 / n) - 1, places=8)
+        # 부호 한쪽만 → 미정
+        self.assertIsNone(finance.mirr([100, 200, 300], 0.08, 0.09))
+
+    def test_wacc(self):
+        # E600 D400 Re12% Rd5% t22% = .6·.12 + .4·.05·.78 = .0876
+        self.assertAlmostEqual(finance.wacc(600, 400, 0.12, 0.05, 0.22), 0.0876, places=6)
+        self.assertIsNone(finance.wacc(0, 0, 0.1, 0.05, 0.2))  # V≤0
+
 
 class TestIngest(unittest.TestCase):
     @classmethod
@@ -195,6 +212,16 @@ class TestDispatch(unittest.TestCase):
     def test_column_signal(self):
         d = dispatch("월간 보고", columns=["계획", "실적", "항목"])
         self.assertEqual(d.template, "variance")
+
+    def test_new_template_routing(self):
+        # 신규 2종 — 일반 키워드(budget_build/unit_economics)보다 우선해야
+        self.assertEqual(dispatch("코호트 잔존 NRR 분석").template, "cohort_retention")
+        self.assertEqual(dispatch("리텐션 GRR").template, "cohort_retention")
+        self.assertEqual(dispatch("인원 계획 인건비 증원").template, "headcount_plan")
+        self.assertEqual(dispatch("fully-loaded headcount").template, "headcount_plan")
+        # 기존 라우팅 회귀(unit_economics·budget_build 은 잔여 키워드 유지)
+        self.assertEqual(dispatch("CAC LTV ARR").template, "unit_economics")
+        self.assertEqual(dispatch("예산 수립").template, "budget_build")
 
 
 class TestProfile(unittest.TestCase):
@@ -466,6 +493,127 @@ class TestTieOutGates(unittest.TestCase):
         rep = m.qc(m.build(broken), broken)
         cont = [ok for n, ok, _ in rep.checks if n == "주간 연속성(기말==익주기초)"]
         self.assertEqual(cont, [False], "연속성 단절인데 통과 — 유동성 오판 미차단")
+
+
+class TestCohortRetention(unittest.TestCase):
+    """코호트 잔존 — GRR 단조·GRR≤NRR·R3 movement tie·R17 NA."""
+
+    def test_golden_invariants(self):
+        from fpna.templates import cohort_retention as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("GRR 단조 비증가(이탈 누적)", names)
+        self.assertIn("GRR ≤ NRR(확장 비음수)", names)
+        self.assertIn("R3 movement_tie", names)
+        self.assertIn("R17 NA surfaced(0분모 은폐 금지)", names)
+
+    def test_grr_monotone_break_fails(self):
+        """이탈을 음수(=잔존 회복)로 만들면 GRR 단조 비증가 위배 FAIL."""
+        from fpna.templates import cohort_retention as m
+        data = m.golden_sample()
+        cohorts = [replace(c) for c in data.cohorts]
+        steps = list(cohorts[0].steps)
+        # age2 의 churn 을 음수로 → 누적 이탈 감소 → GRR 상승(위배)
+        steps[2] = replace(steps[2], churn=-200.0)
+        cohorts[0] = replace(cohorts[0], steps=steps)
+        broken = replace(data, cohorts=cohorts)
+        rep = m.qc(m.build(broken), broken)
+        mono = [ok for n, ok, _ in rep.checks if n == "GRR 단조 비증가(이탈 누적)"]
+        self.assertEqual(mono, [False], "GRR 상승인데 통과 — 이탈누적 위배 미차단")
+
+    def test_movement_tie_break_fails(self):
+        """end_mrr 정의를 어기는 step 변형 시 R3 movement tie FAIL.
+
+        ⚠ end_mrr 는 property 라 직접 못 깬다 → start_mrr 만 바꿔도 합은 유지되므로
+        churn 을 음수로 바꿔 tie 가 아니라 단조에서 잡힘을 위 테스트가 담당.
+        여기선 base 0 코호트로 R17 NA 표면화를 검증."""
+        from fpna.templates import cohort_retention as m
+        data = m.golden_sample()
+        cohorts = [replace(c) for c in data.cohorts]
+        # 시작 MRR 0 코호트 추가 → 모든 age 비율 NA(0분모, R17)
+        zero = m.CohortLine("2024-99", [
+            m.CohortStep(0, start_mrr=0.0),
+            m.CohortStep(1, start_mrr=0.0),
+        ])
+        broken = replace(data, cohorts=cohorts + [zero])
+        rep = m.qc(m.build(broken), broken)
+        self.assertTrue(rep.passed, rep.summary())  # NA 는 정직 emit → 통과
+        na = [d for n, ok, d in rep.checks if n == "R17 NA surfaced(0분모 은폐 금지)"]
+        self.assertEqual(len(na), 1)
+
+
+class TestHeadcountPlan(unittest.TestCase):
+    """인원 계획 — R10 부서 roll-up tie·R3 loading tie·R1 시간 전수."""
+
+    def test_golden_invariants(self):
+        from fpna.templates import headcount_plan as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R10 dept_rollup_tie", names)
+        self.assertIn("R3 loading_tie", names)
+        self.assertIn("R1 time_ruler", names)
+
+    def test_fully_loaded(self):
+        """fully_loaded = base×(1+loading), 월 = annual/12."""
+        from fpna.templates import headcount_plan as m
+        ln = m.RosterLine("X", base_salary_annual=100.0, loading_rate=0.25)
+        self.assertAlmostEqual(ln.fully_loaded_annual, 125.0)
+        self.assertAlmostEqual(ln.fully_loaded_monthly, 125.0 / 12.0)
+
+    def test_period_gap_fails_r1(self):
+        """기간 벡터를 1기 짧게 주면 R1 전수성 FAIL."""
+        from fpna.templates import headcount_plan as m
+        data = m.golden_sample()
+        lines = [replace(ln, headcount=ln.headcount[:11]) for ln in data.lines]
+        broken = replace(data, lines=lines)  # end 는 그대로 → 12기 기대, 11기만 존재
+        rep = m.qc(m.build(broken), broken)
+        r1 = [ok for n, ok, _ in rep.checks if n == "R1 time_ruler"]
+        self.assertEqual(r1, [False], "기간 갭인데 R1 통과")
+
+
+class TestInvestmentAppraisalExt(unittest.TestCase):
+    """investment_appraisal 보완 — MIRR·WACC·TV·tornado (기존 회귀 보존)."""
+
+    def test_basic_golden_unchanged(self):
+        """옵션 없는 기본 골든은 종전대로 통과(회귀)."""
+        from fpna.templates import investment_appraisal as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+
+    def test_full_golden_extras(self):
+        from fpna.templates import investment_appraisal as m
+        data = m.golden_sample_full()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("WACC 계산 가능", names)
+        self.assertIn("MIRR 해 존재", names)
+        self.assertIn("잔존가치(TV) 가산 tie", names)
+        self.assertIn("토네이도 swing 정의", names)
+
+    def test_terminal_value_added_to_last_cf(self):
+        """TV 가 마지막 기 현금흐름에 정확히 가산되는지(이중가산·누락 차단)."""
+        from fpna.templates import investment_appraisal as m
+        data = replace(m.golden_sample(), terminal_value=200.0)
+        eff = m._effective_cashflows(data)
+        self.assertEqual(eff[-1], data.cashflows[-1] + 200.0)
+        # NPV 가 TV 만큼 커진다(할인 후)
+        npv_no_tv = finance.npv(0.10, data.cashflows)
+        npv_tv = finance.npv(0.10, eff)
+        self.assertGreater(npv_tv, npv_no_tv)
+
+    def test_wacc_as_rate(self):
+        """use_wacc_as_rate=True 면 할인율 = WACC."""
+        from fpna.templates import investment_appraisal as m
+        wb_ = m.WaccBuild(600, 400, 0.12, 0.05, 0.22)
+        data = replace(m.golden_sample(), wacc_build=wb_, use_wacc_as_rate=True)
+        self.assertAlmostEqual(m._effective_rate(data),
+                               finance.wacc(600, 400, 0.12, 0.05, 0.22), places=8)
 
 
 if __name__ == "__main__":

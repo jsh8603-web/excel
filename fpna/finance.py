@@ -62,6 +62,44 @@ def irr(cashflows: list[float], *, guess: float = 0.1,
     return (lo + hi) / 2
 
 
+def mirr(cashflows: list[float], finance_rate: float, reinvest_rate: float
+         ) -> float | None:
+    """MIRR(수정 IRR). 음 현금흐름은 finance_rate 로 t0 까지 할인(PV),
+    양 현금흐름은 reinvest_rate 로 마지막 기간까지 복리(FV).
+
+    MIRR = (FV_positive / -PV_negative) ** (1/n) - 1.
+    음 흐름 또는 양 흐름이 없으면(부호 한쪽뿐) 미정 → None.
+    Excel MIRR() 정의와 일치한다(QC 가 셀 수식과 대조).
+    """
+    n = len(cashflows) - 1
+    if n <= 0:
+        return None
+    pv_neg = 0.0
+    fv_pos = 0.0
+    for t, cf in enumerate(cashflows):
+        if cf < 0:
+            pv_neg += cf / (1.0 + finance_rate) ** t
+        elif cf > 0:
+            fv_pos += cf * (1.0 + reinvest_rate) ** (n - t)
+    if pv_neg == 0 or fv_pos == 0:
+        return None                       # 한쪽 부호만 → MIRR 미정
+    return (fv_pos / -pv_neg) ** (1.0 / n) - 1.0
+
+
+def wacc(equity_value: float, debt_value: float, cost_equity: float,
+         cost_debt: float, tax_rate: float) -> float | None:
+    """가중평균자본비용. WACC = E/V·Re + D/V·Rd·(1−tax).
+
+    V = E + D. V ≤ 0 이면 미정 → None. tax_rate 는 한계세율(0..1).
+    """
+    v = equity_value + debt_value
+    if v <= 0:
+        return None
+    we = equity_value / v
+    wd = debt_value / v
+    return we * cost_equity + wd * cost_debt * (1.0 - tax_rate)
+
+
 def discounted_payback(rate: float, cashflows: list[float]) -> float | None:
     """할인 회수기간(기간 단위, 선형보간). 회수 못 하면 None."""
     cum = 0.0
@@ -457,7 +495,7 @@ def stickiness_proxy(costs: list[float], activity: list[float], *,
 
 
 __all__ = [
-    "npv", "irr", "discounted_payback", "payback", "cagr",
+    "npv", "irr", "mirr", "wacc", "discounted_payback", "payback", "cagr",
     "variance", "variance_pct", "safe_div",
     "gross_margin", "operating_margin", "current_ratio", "ltv_cac",
     "approx_equal",

@@ -19,6 +19,8 @@ _MODULES = {
     "scenario_sensitivity": "fpna.templates.scenario_sensitivity",
     "pnl_3statement": "fpna.templates.pnl_3statement",
     "board_kpi_pack": "fpna.templates.board_kpi_pack",
+    "cohort_retention": "fpna.templates.cohort_retention",
+    "headcount_plan": "fpna.templates.headcount_plan",
     # 고정비 FP&A (fpna-fixed-cost-tables 스킬)
     "fc_depreciation_schedule": "fpna.templates.fc_depreciation_schedule",
     "fc_variance_bridge": "fpna.templates.fc_variance_bridge",
