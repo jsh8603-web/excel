@@ -284,12 +284,191 @@ class TestC12Bridge(unittest.TestCase):
         self.assertFalse(rep.passed)
 
 
+class TestNewMeasures(unittest.TestCase):
+    """A2~A6 신규 measure (finance/dims/view_contract 추가분)."""
+
+    def test_normalized_run_rate_tie_and_mask(self):
+        # 11×100 정상 + 1×1000 one-off → 마스킹 1, tie-out 보존, factor=active_months
+        s = [100.0] * 11 + [1000.0]
+        r = finance.normalized_run_rate(s, deseasonalize=False)
+        self.assertEqual(r.masked_index, [11])
+        self.assertAlmostEqual(r.actual_total, r.normalized_total + r.one_off_total)
+        self.assertEqual(r.active_months, 11)            # 12 하드코딩 금지 — 마스킹 후 11
+        self.assertAlmostEqual(r.monthly_run_rate, 100.0)
+        self.assertAlmostEqual(r.annualized, 1200.0)
+
+    def test_normalized_run_rate_no_outlier_uses_all(self):
+        # step(50→70) 은 one-off 아님 — 마스킹 0 기대
+        s = [50.0] * 6 + [70.0] * 6
+        r = finance.normalized_run_rate(s, deseasonalize=False)
+        self.assertEqual(r.masked_index, [])
+        self.assertEqual(r.active_months, 12)
+
+    def test_lmdi_residual_zero(self):
+        d = finance.variance_decomp_lmdi(10, 100, 12, 80)   # 단가↑ 수량↓
+        self.assertGreater(d.rate_effect, 0)                # rate > 0
+        self.assertLess(d.volume_effect, 0)                 # volume < 0
+        self.assertAlmostEqual(d.residual, 0.0, places=9)   # 완전분해 잔차 0
+        self.assertAlmostEqual(d.rate_effect + d.volume_effect, d.total, places=9)
+
+    def test_lmdi_undefined_fallback(self):
+        d = finance.variance_decomp_lmdi(10, 0, 12, 80)     # 0 수량 → 로그 미정의
+        self.assertTrue(d.undefined)                        # decomp_undefined flag
+
+    def test_stickiness_asymmetry(self):
+        # 활동 하락 시 비용 덜 줄어듦 → up_elas > down_elas (sticky)
+        costs = [100.0, 110.0, 108.0]
+        act = [100.0, 120.0, 90.0]
+        st = finance.stickiness_proxy(costs, act)
+        self.assertIsNotNone(st.asymmetry)
+        self.assertTrue(st.sticky)
+
+    def test_cuttability_rung_contract_driven(self):
+        c = dims.Contract("L1", "6010", "임대", datetime.date(2023, 1, 1),
+                          datetime.date(2025, 6, 30), "monthly", 100.0)
+        # notice 0 → 잔여 17M ≤ locked_horizon(12)? 17>12 → committed (장기)
+        res = dims.cuttability_rung(c, as_of=datetime.date(2024, 1, 31), notice_months=0)
+        self.assertEqual(res["rung"], "committed")
+        # evergreen + notice 미정의 → committed(locked)
+        ev = dims.Contract("U1", "6300", "전력", datetime.date(2023, 1, 1),
+                           None, "monthly", 100.0)
+        res2 = dims.cuttability_rung(ev, as_of=datetime.date(2024, 1, 31), notice_months=0)
+        self.assertEqual(res2["rung"], "committed")
+        self.assertIsNone(res2["earliest_exit_m"])
+
+    def test_cuttability_stickiness_does_not_change_rung(self):
+        """⛔ 단일신호 금지: stickiness 가 등급을 바꾸지 않는다(보조 신호)."""
+        c = dims.Contract("L1", "6010", "임대", datetime.date(2023, 1, 1),
+                          datetime.date(2025, 6, 30), "monthly", 100.0)
+        a = dims.cuttability_rung(c, as_of=datetime.date(2024, 1, 31), notice_months=0,
+                                  stickiness=0.9)["rung"]
+        b = dims.cuttability_rung(c, as_of=datetime.date(2024, 1, 31), notice_months=0,
+                                  stickiness=None)["rung"]
+        self.assertEqual(a, b)
+
+    def test_ratio_na_reasons(self):
+        rep = QCReport("t")
+        led = vc.AnomalyLedger()
+        # 0분모 → ZERO_DENOM
+        v, reason = vc.assert_ratio_na(rep, 100, 0, led)
+        self.assertIsNone(v)
+        self.assertEqual(reason, "ZERO_DENOM")
+        # 0분자 → 0 (NA 아님)
+        v2, r2 = vc.ratio_or_na(0, 5)
+        self.assertEqual(v2, 0.0)
+        self.assertIsNone(r2)
+        # 결측분자 → MISSING_NUM
+        _, r3 = vc.ratio_or_na(None, 5)
+        self.assertEqual(r3, "MISSING_NUM")
+        # 단위불일치 → UNIT_MISMATCH
+        _, r4 = vc.ratio_or_na(10, 5, num_unit="sqft", den_unit="㎡",
+                               require_same_unit=True)
+        self.assertEqual(r4, "UNIT_MISMATCH")
+        self.assertEqual(len(led), 1)   # ZERO_DENOM 1건만 emit
+
+
+class TestNewFcTemplates(unittest.TestCase):
+    """A2~A6 신규 템플릿 5종 — golden build+qc / dispatch / render 게이트 / 엣지."""
+    _TYPES = ("fc_runrate_normalized", "fc_cuttability_ladder", "fc_driver_unitcost",
+              "fc_forward_da", "fc_prepaid_rollforward")
+
+    def test_registered(self):
+        av = available()
+        for t in self._TYPES:
+            self.assertIn(t, av)
+
+    def test_golden_build_qc_pass(self):
+        for t in self._TYPES:
+            mod = get_template(t)
+            data = mod.golden_sample()
+            rep = mod.qc(mod.build(data), data)
+            self.assertTrue(rep.passed, "%s QC FAIL:\n%s" % (t, rep.summary()))
+
+    def test_dispatch_routing(self):
+        self.assertEqual(dispatch("비용 정규화 런레이트 연환산").template,
+                         "fc_runrate_normalized")
+        self.assertEqual(dispatch("고정비 절감 가능성 사다리").template,
+                         "fc_cuttability_ladder")
+        self.assertEqual(dispatch("차량 대당 단위원가").template, "fc_driver_unitcost")
+        self.assertEqual(dispatch("미래 감가상각 투영").template, "fc_forward_da")
+        self.assertEqual(dispatch("선급비용 롤포워드").template, "fc_prepaid_rollforward")
+        # 회귀: 과거 감가 스케줄은 여전히 depreciation_schedule
+        self.assertEqual(dispatch("자산 감가상각 스케줄").template,
+                         "fc_depreciation_schedule")
+
+    def test_render_gate_saves(self):
+        import tempfile
+        for t in self._TYPES:
+            data = get_template(t).golden_sample()
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, t + ".xlsx")
+                res = render(t, data, out)
+                self.assertTrue(res.saved and res.qc.passed, "%s render FAIL" % t)
+                self.assertTrue(os.path.exists(out))
+
+    def test_runrate_tie_breaks_when_normalized_corrupted(self):
+        """A2 tie: normalized 가 actual−one_off 와 안 맞으면 FAIL(메타 위조)."""
+        mod = get_template("fc_runrate_normalized")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        wb._fpna_meta["sum_norm"] += 50.0   # tie 깨기
+        self.assertFalse(mod.qc(wb, data).passed)
+
+    def test_driver_unitcost_na_conserved(self):
+        """A4/R17: golden 에 ZERO_DENOM·UNIT_MISMATCH 2건 → ledger==surfaced 보존."""
+        mod = get_template("fc_driver_unitcost")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        self.assertEqual(len(meta["anomaly_ledger"]), 2)        # ZERO_DENOM + UNIT_MISMATCH
+        self.assertEqual(meta["surfaced_flags"], 2)
+        self.assertTrue(mod.qc(wb, data).passed)
+        # 은폐 시뮬레이션 → FAIL
+        wb._fpna_meta["surfaced_flags"] = 0
+        self.assertFalse(mod.qc(wb, data).passed)
+
+    def test_driver_blended_not_column_sum(self):
+        """A4: blended = Σcost/Σqty (열 합산 아님). 정상 2라인만 가중."""
+        mod = get_template("fc_driver_unitcost")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        meta = wb._fpna_meta
+        # 정상 라인: cost 12000(qty20) + 30000(qty1000) → Σ42000/Σ1020
+        self.assertAlmostEqual(meta["blended"], 42_000.0 / 1_020.0, places=6)
+
+    def test_prepaid_clamp_no_negative(self):
+        """A6: 조기해지 999 요청 > 잔액 → clamp(음수 잔액 차단), chain 연속."""
+        mod = get_template("fc_prepaid_rollforward")
+        data = mod.golden_sample()
+        wb = mod.build(data)
+        rolled = wb._fpna_meta["rolled"]
+        for key, rr in rolled.items():
+            for beg, add, amort, end in rr:
+                self.assertGreaterEqual(end, -1e-9)            # 음수 잔액 없음
+                self.assertLessEqual(amort, beg + add + 1e-9)  # clamp
+        self.assertTrue(mod.qc(wb, data).passed)
+
+    def test_forward_da_sums_to_depreciable(self):
+        """A5: 투영창이 내용연수 포함하면 Σ미래D&A == cost−salvage."""
+        mod = get_template("fc_forward_da")
+        data = mod.golden_sample()   # start 2024 end 2026(36M) — 두 자산 내용연수 24/36 포함
+        wb = mod.build(data)
+        # CX-01 (24M, 2024-01 가동) → 36M 창에 전부 포함 → Σ=24000
+        fact = wb._fpna_meta["fact"]
+        got = sum(r["dep"] for r in fact.rows if r["asset_no"] == "CX-01")
+        self.assertAlmostEqual(got, 24_000.0, places=6)
+        self.assertTrue(mod.qc(wb, data).passed)
+
+
 class TestNoForbiddenHeuristic(unittest.TestCase):
     """R6: fc 빌더 소스에 샘플링/head/top-N 휴리스틱 토큰이 없어야 한다."""
     def test_fc_builders_clean(self):
         tdir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "fpna", "templates")
-        for fn in ("fc_depreciation_schedule.py", "fc_variance_bridge.py"):
+        for fn in ("fc_depreciation_schedule.py", "fc_variance_bridge.py",
+                   "fc_runrate_normalized.py", "fc_cuttability_ladder.py",
+                   "fc_driver_unitcost.py", "fc_forward_da.py",
+                   "fc_prepaid_rollforward.py"):
             with open(os.path.join(tdir, fn), encoding="utf-8") as fh:
                 src = fh.read()
             rep = QCReport("r6")

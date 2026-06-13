@@ -360,6 +360,113 @@ class TestTieOutGates(unittest.TestCase):
         item = [(n, ok) for n, ok, _ in rep.checks if n == "source tie-out(항목별)"]
         self.assertEqual(item, [("source tie-out(항목별)", False)])
 
+    # --- variance R9 시나리오정합 + 브리지합 tie ------------------------
+    def test_variance_golden_scenario_and_bridge(self):
+        from fpna.templates import variance as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R9 scenario_aligned", names)
+        self.assertIn("브리지 합산 tie(Σ구간 == 양끝차)", names)
+
+    def test_variance_scenario_misalignment_fails(self):
+        """한 시나리오(Budget)에만 존재하는 키 → R9 FAIL(0 처리 금지)."""
+        from fpna.templates import variance as m
+        data = m.golden_sample()
+        items = list(data.items)
+        # plan 만 있고 actual 이 없는(=Budget-only) 항목 추가
+        items.insert(-1, m.LineItem("신규부서", plan=50, actual=None))
+        broken = replace(data, items=items)
+        rep = m.qc(m.build(broken), broken)
+        r9 = [(n, ok) for n, ok, _ in rep.checks if n == "R9 scenario_aligned"]
+        self.assertEqual(r9, [("R9 scenario_aligned", False)],
+                         "Budget-only 키인데 R9 통과 — silent default 미차단")
+
+    def test_variance_bridge_break_fails(self):
+        """총계가 항목 Δ 합과 안 맞으면(워터폴 미합치) 브리지 tie FAIL."""
+        from fpna.templates import variance as m
+        data = m.golden_sample()
+        items = list(data.items)
+        ti = next(i for i, it in enumerate(items) if it.is_total)
+        items[ti] = replace(items[ti], actual=items[ti].actual + 33.0)  # 총계만 부풀림
+        broken = replace(data, items=items)
+        rep = m.qc(m.build(broken), broken)
+        self.assertFalse(rep.passed, "워터폴 미합치인데 QC 통과")
+        bt = [ok for n, ok, _ in rep.checks if n == "브리지 합산 tie(Σ구간 == 양끝차)"]
+        self.assertEqual(bt, [False])
+
+    # --- rolling_forecast R1 시간전수 + 컷오버 grain --------------------
+    def test_rolling_golden_r1_and_cutover(self):
+        from fpna.templates import rolling_forecast as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R1 time_ruler", names)
+        self.assertIn("컷오버 grain(actual XOR forecast)", names)
+
+    def test_rolling_period_gap_fails_r1(self):
+        """캘린더 기간을 건너뛰면(P07 누락) R1 FAIL."""
+        from fpna.templates import rolling_forecast as m
+        data = m.golden_sample()
+        # P07 을 빼서 갭 생성(periods/coords/series 모두 동기 제거)
+        drop = 6  # index of P07
+        periods = [p for i, p in enumerate(data.periods) if i != drop]
+        coords = [c for i, c in enumerate(data.cal_coords) if i != drop]
+        series = {k: [v for i, v in enumerate(vals) if i != drop]
+                  for k, vals in data.series.items()}
+        broken = replace(data, periods=periods, cal_coords=coords, series=series,
+                         actual_until=5)
+        rep = m.qc(m.build(broken), broken)
+        r1 = [ok for n, ok, _ in rep.checks if n == "R1 time_ruler"]
+        self.assertEqual(r1, [False], "기간 갭인데 R1 통과 — silent 갭 미차단")
+
+    def test_rolling_cutover_overlap_fails(self):
+        """같은 기간이 actual+forecast 양쪽 → 이중계상 게이트 FAIL."""
+        from fpna.templates import rolling_forecast as m
+        data = m.golden_sample()
+        n = len(data.periods)
+        # P06(idx5)을 actual·forecast 양쪽에 넣어 중첩
+        a_idx = list(range(0, 6))
+        f_idx = list(range(5, n))   # 5 가 양쪽
+        broken = replace(data, actual_idx=a_idx, forecast_idx=f_idx)
+        rep = m.qc(m.build(broken), broken)
+        ov = [ok for n_, ok, _ in rep.checks
+              if n_ == "컷오버 grain(actual XOR forecast)"]
+        self.assertEqual(ov, [False], "중첩 기간인데 통과 — 이중계상 미차단")
+
+    # --- cashflow_13w 13주 전수 + 주간 연속성 --------------------------
+    def test_cashflow_golden_r1_and_continuity(self):
+        from fpna.templates import cashflow_13w as m
+        data = m.golden_sample()
+        rep = m.qc(m.build(data), data)
+        self.assertTrue(rep.passed, rep.summary())
+        names = [n for n, _, _ in rep.checks]
+        self.assertIn("R1 13주 전수성", names)
+        self.assertIn("주간 연속성(기말==익주기초)", names)
+
+    def test_cashflow_short_weeks_fails_r1(self):
+        """12주만(13주 미충족) → R1 전수성 FAIL."""
+        from fpna.templates import cashflow_13w as m
+        data = m.golden_sample()
+        broken = replace(data, weeks=12, inflows=data.inflows[:12],
+                         outflows=data.outflows[:12])
+        rep = m.qc(m.build(broken), broken)
+        r1 = [ok for n, ok, _ in rep.checks if n == "R1 13주 전수성"]
+        self.assertEqual(r1, [False], "13주 미충족인데 통과")
+
+    def test_cashflow_continuity_break_fails(self):
+        """한 주 기초를 전주 기말과 다르게 덮어쓰면 연속성 단절 FAIL."""
+        from fpna.templates import cashflow_13w as m
+        data = m.golden_sample()
+        opens, closes = data.week_balances()
+        opens[5] = closes[4] + 777.0   # W6 기초를 전주 기말과 단절
+        broken = replace(data, openings=opens)
+        rep = m.qc(m.build(broken), broken)
+        cont = [ok for n, ok, _ in rep.checks if n == "주간 연속성(기말==익주기초)"]
+        self.assertEqual(cont, [False], "연속성 단절인데 통과 — 유동성 오판 미차단")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

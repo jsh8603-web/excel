@@ -20,8 +20,19 @@ class DispatchResult:
 # (template, [키워드정규식]) — 위에서부터 우선
 _RULES = [
     # 고정비 FP&A — 구체 키워드라 일반 variance/손익보다 앞에 둔다.
+    # forward_da 는 감가 단어를 쓰므로 depreciation_schedule 보다 앞(미래/forward 한정).
+    ("fc_forward_da", [r"미래\s*감가", r"forward\s*d&?a", r"감가.*투영", r"투영.*감가",
+                       r"미래\s*상각", r"capex.*감가", r"향후\s*감가"]),
     ("fc_depreciation_schedule", [r"감가\s*상각", r"depreciation", r"상각\s*스케줄",
                                   r"내용\s*연수", r"자산\s*대장.*상각"]),
+    ("fc_runrate_normalized", [r"런\s*레이트", r"run[\s-]*rate", r"정규화.*비용",
+                               r"연환산", r"normaliz", r"1회성\s*제외", r"베이스라인"]),
+    ("fc_cuttability_ladder", [r"절감\s*가능", r"cuttab", r"해지\s*가능", r"비용\s*절감",
+                               r"고정비\s*절감", r"time[\s-]*to[\s-]*exit", r"감축\s*여력"]),
+    ("fc_driver_unitcost", [r"동인\s*단가", r"단위\s*원가", r"unit\s*cost", r"대당",
+                            r"㎡당", r"면적당", r"kwh당", r"활동\s*동인"]),
+    ("fc_prepaid_rollforward", [r"선급", r"prepaid", r"롤\s*포워드", r"roll[\s-]*forward",
+                                r"선급비용\s*상각"]),
     ("fc_variance_bridge", [r"고정비.*브리지", r"고정비.*변동", r"고정비.*요인",
                             r"고정비.*walk", r"고정비.*워크", r"고정비\s*bridge"]),
     ("fc_maturity_wall", [r"만기\s*도래", r"maturity\s*wall", r"약정\s*만기",

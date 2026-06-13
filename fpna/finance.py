@@ -7,6 +7,7 @@ NPV/IRR/payback/CAGR/variance/비율. QC 단계가 셀 수식값을 재계산해
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 
 def npv(rate: float, cashflows: list[float]) -> float:
@@ -226,6 +227,235 @@ def depreciation_schedule_ext(acq_cost: float, salvage: float, life_months: int,
     return rows
 
 
+# --------------------------------------------------------------------------- #
+# 정규화 run-rate (A2) — robust 위치추정 × 계절지수 deseasonalize             #
+#   레퍼런스(차용, 코드 미반입): X-13ARIMA-SEATS 계절지수 개념(확인) +        #
+#   Tukey IQR / Hampel(원전 불확실) MAD robust 위치추정. 산식만 차용.         #
+#   핵심: one-off(단발 대형계상)를 robust mask 로 제외 후, 활성월(active)      #
+#   기준 factor 로 연환산 — 12 하드코딩 금지(부분기간 이중연환산 방지).        #
+# --------------------------------------------------------------------------- #
+def _median(xs: list[float]) -> float:
+    s = sorted(xs)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    m = n // 2
+    return s[m] if n % 2 else (s[m - 1] + s[m]) / 2.0
+
+
+def median_abs_deviation(xs: list[float], *, scale: float = 1.4826) -> float:
+    """MAD = median(|x - median(x)|) × scale. scale=1.4826 → 정규분포 σ 일치(Hampel).
+
+    (Hampel 원전 연도 불확실 — robust σ 추정 산식만 차용.)
+    """
+    if not xs:
+        return 0.0
+    med = _median(xs)
+    return _median([abs(x - med) for x in xs]) * scale
+
+
+def tukey_fences(xs: list[float], *, k: float = 1.5) -> tuple[float, float]:
+    """Tukey IQR fence (Q1 - k·IQR, Q3 + k·IQR). one-off 상·하한 경계."""
+    if not xs:
+        return (0.0, 0.0)
+    s = sorted(xs)
+    n = len(s)
+
+    def _q(p: float) -> float:
+        # 선형보간 분위수(stdlib, numpy 불필요)
+        idx = p * (n - 1)
+        lo = int(math.floor(idx))
+        hi = int(math.ceil(idx))
+        if lo == hi:
+            return s[lo]
+        return s[lo] + (s[hi] - s[lo]) * (idx - lo)
+
+    q1, q3 = _q(0.25), _q(0.75)
+    iqr = q3 - q1
+    return (q1 - k * iqr, q3 + k * iqr)
+
+
+@dataclass
+class RunRateResult:
+    """정규화 run-rate 결과. 모든 중간값을 박제(QC 재계산·정직성)."""
+    actual_total: float            # Σ원계열(전체)
+    one_off_total: float           # Σ마스킹된 one-off
+    normalized_total: float        # actual - one_off (마스킹 후 합)
+    active_months: int             # 정상(비마스킹) 활성월 수 → factor 기준
+    monthly_run_rate: float        # normalized_total / active_months
+    annualized: float              # monthly_run_rate × 12 (월런레이트의 연환산)
+    masked_index: list = field(default_factory=list)        # 마스킹된 원계열 인덱스
+    seasonal_factors: list = field(default_factory=list)    # 적용 계절지수(period→factor)
+    over_masking: bool = False     # 마스킹 비율 과다 경고(>50%)
+
+
+def seasonal_indices(series: list[float], season_len: int = 12) -> list[float]:
+    """계절지수(평균=1 정규화). period p 의 지수 = mean(series[p::season_len]) / grand_mean.
+
+    X-13 의 multiplicative 계절성분 개념만 차용(ARIMA 전체 X). 길이 < season_len 또는
+    grand_mean=0 이면 전부 1.0(계절성 없음). 반환 길이 = len(series)(각 원소의 지수).
+    """
+    n = len(series)
+    if n == 0:
+        return []
+    grand = sum(series) / n
+    if grand == 0 or n < season_len:
+        return [1.0] * n
+    bucket_mean: dict[int, float] = {}
+    for p in range(season_len):
+        vals = series[p::season_len]
+        if vals:
+            bucket_mean[p] = (sum(vals) / len(vals)) / grand
+    return [bucket_mean.get(i % season_len, 1.0) for i in range(n)]
+
+
+def normalized_run_rate(series: list[float], *, season_len: int = 12,
+                        annualize_factor: int = 12,
+                        deseasonalize: bool = True,
+                        tukey_k: float = 1.5,
+                        hampel_sigmas: float = 3.0,
+                        over_mask_threshold: float = 0.5) -> RunRateResult:
+    """one-off 마스킹(robust) × 계절 조정 후 월 run-rate·연환산.
+
+    절차:
+      1) (옵션) 계절지수로 deseasonalize → 비교 가능한 계열.
+      2) robust mask: Tukey IQR fence **또는** Hampel(median±k·MAD) 밖이면 one-off.
+         두 신호의 합집합(보수적 — 둘 중 하나라도 outlier 면 마스킹).
+      3) 정상(비마스킹) 항목만으로 월 run-rate = Σnormalized / active_months.
+         ★active_months = 비마스킹 항목 수(12 하드코딩 금지 — 부분기간 이중연환산 방지).
+      4) annualized = monthly_run_rate × annualize_factor.
+
+    one_off_total 은 *원계열*(season 조정 전)에서 마스킹분을 합산(tie-out: actual =
+    normalized + one_off 가 원계열 단위로 성립). normalized_total 도 원계열 단위.
+    """
+    n = len(series)
+    actual_total = sum(series)
+    if n == 0:
+        return RunRateResult(0.0, 0.0, 0.0, 0, 0.0, 0.0, [], [], False)
+
+    factors = seasonal_indices(series, season_len) if deseasonalize else [1.0] * n
+    # deseasonalized 계열(마스킹 판정용). factor 0 방어.
+    des = [(series[i] / factors[i]) if factors[i] else series[i] for i in range(n)]
+
+    lo, hi = tukey_fences(des, k=tukey_k)
+    med = _median(des)
+    mad = median_abs_deviation(des)
+    masked_idx: list[int] = []
+    for i, x in enumerate(des):
+        tukey_out = (x < lo) or (x > hi)
+        hampel_out = (mad > 0) and (abs(x - med) > hampel_sigmas * mad)
+        if tukey_out or hampel_out:
+            masked_idx.append(i)
+
+    masked_set = set(masked_idx)
+    one_off_total = sum(series[i] for i in masked_idx)            # 원계열 단위
+    normalized_total = actual_total - one_off_total              # tie-out 보존
+    active = n - len(masked_idx)
+    monthly = (normalized_total / active) if active > 0 else 0.0
+    annualized = monthly * annualize_factor
+    over = (n > 0) and (len(masked_idx) / n > over_mask_threshold)
+    return RunRateResult(
+        actual_total=actual_total, one_off_total=one_off_total,
+        normalized_total=normalized_total, active_months=active,
+        monthly_run_rate=monthly, annualized=annualized,
+        masked_index=masked_idx, seasonal_factors=factors, over_masking=over)
+
+
+# --------------------------------------------------------------------------- #
+# LMDI variance decomposition (A4/⑤) — rate + volume, 잔차=0                  #
+#   레퍼런스(차용): Horngren rate/volume variance(확인) + LMDI                #
+#   (Ang 2005 Energy Policy 확인; 음수보정 Ang&Liu 2007 확인). 로그평균       #
+#   가중으로 완전분해(residual≡0). 음수/0 은 산술 fallback(decomp_undefined).  #
+# --------------------------------------------------------------------------- #
+def _log_mean(a: float, b: float) -> float:
+    """로그평균 L(a,b) = (a-b)/(ln a - ln b). a==b 면 a. a,b>0 전제."""
+    if a == b:
+        return a
+    return (a - b) / (math.log(a) - math.log(b))
+
+
+@dataclass
+class LmdiResult:
+    rate_effect: float       # 단가(P) 효과
+    volume_effect: float     # 수량(Q) 효과
+    total: float             # P1Q1 - P0Q0 (검증 대상)
+    residual: float          # total - (rate+volume) — LMDI 면 ≈0
+    undefined: bool = False  # 음수/0 으로 로그평균 불가 → 산술 fallback 사용
+
+
+def variance_decomp_lmdi(p0: float, q0: float, p1: float, q1: float) -> LmdiResult:
+    """비용 ΔC = P1Q1 - P0Q0 를 rate(단가) + volume(수량) 으로 완전분해(잔차 0).
+
+    LMDI-I 가법분해: 가중치 = 로그평균 L(C1,C0).
+      rate_effect   = L(C1,C0) · ln(P1/P0)
+      volume_effect = L(C1,C0) · ln(Q1/Q0)
+      rate + volume == C1 - C0 (residual ≡ 0, 항등).
+
+    C0=P0Q0 또는 C1=P1Q1 ≤ 0 (또는 P/Q ≤ 0) 면 로그 미정의 → 산술 fallback:
+      rate=(P1-P0)·Q1,  volume=P0·(Q1-Q0)  (Horngren, 잔차는 mix 로 흡수되며 0 아닐 수 있음).
+      이때 undefined=True flag (decomp_undefined).
+    """
+    c0, c1 = p0 * q0, p1 * q1
+    total = c1 - c0
+    # 로그평균 정의역: C0,C1>0 & P0,P1>0 & Q0,Q1>0
+    if min(c0, c1, p0, p1, q0, q1) > 0:
+        L = _log_mean(c1, c0)
+        rate = L * math.log(p1 / p0)
+        vol = L * math.log(q1 / q0)
+        resid = total - (rate + vol)
+        return LmdiResult(rate, vol, total, resid, undefined=False)
+    # fallback (Horngren) — 음수/0 보호
+    rate = (p1 - p0) * q1
+    vol = p0 * (q1 - q0)
+    resid = total - (rate + vol)
+    return LmdiResult(rate, vol, total, resid, undefined=True)
+
+
+# --------------------------------------------------------------------------- #
+# stickiness proxy (A3 보조) — sticky costs(ABJ 2003) 탄력                    #
+#   레퍼런스(확인): Anderson-Banker-Janakiraman 2003 JAR. 비용이 매출 상승    #
+#   시보다 하락 시 *덜* 줄어드는 비대칭성(원가 점착성). ⛔ 단일신호로 cuttable  #
+#   판정 금지 — cuttability_rung(Contract 속성)의 *보조지표*로만 사용.         #
+# --------------------------------------------------------------------------- #
+@dataclass
+class StickinessResult:
+    up_elasticity: float | None     # 활동 ↑ 구간 Δcost%/Δactivity% 평균
+    down_elasticity: float | None   # 활동 ↓ 구간 Δcost%/Δactivity% 평균
+    asymmetry: float | None         # up - down (>0 = sticky: 내릴 때 덜 준다)
+    sticky: bool                    # asymmetry > threshold (보조 신호일 뿐)
+    n_up: int = 0
+    n_down: int = 0
+
+
+def stickiness_proxy(costs: list[float], activity: list[float], *,
+                     asymmetry_threshold: float = 0.0) -> StickinessResult:
+    """원가 점착성(ABJ 2003) 근사 — 활동 증가/감소 구간 비용 탄력성 비대칭.
+
+    각 인접 기간 (Δlog cost / Δlog activity) 를 활동 증감 방향으로 분리 평균.
+    sticky = up_elasticity > down_elasticity (활동 하락 시 비용이 덜 줄어듦).
+
+    ⛔ 단일신호 금지: 반환의 sticky 는 cuttability *보조* 신호. 등급 판정은
+    dims.cuttability_rung(계약 속성)이 주(主)이고 이 값은 modulate 보조로만.
+    """
+    ups: list[float] = []
+    downs: list[float] = []
+    for i in range(1, len(costs)):
+        c0, c1 = costs[i - 1], costs[i]
+        a0, a1 = activity[i - 1], activity[i]
+        if None in (c0, c1, a0, a1) or c0 <= 0 or c1 <= 0 or a0 <= 0 or a1 <= 0:
+            continue
+        d_a = math.log(a1 / a0)
+        if d_a == 0:
+            continue
+        elas = math.log(c1 / c0) / d_a
+        (ups if a1 > a0 else downs).append(elas)
+    up = (sum(ups) / len(ups)) if ups else None
+    down = (sum(downs) / len(downs)) if downs else None
+    asym = (up - down) if (up is not None and down is not None) else None
+    sticky = (asym is not None) and (asym > asymmetry_threshold)
+    return StickinessResult(up, down, asym, sticky, len(ups), len(downs))
+
+
 __all__ = [
     "npv", "irr", "discounted_payback", "payback", "cagr",
     "variance", "variance_pct", "safe_div",
@@ -233,4 +463,11 @@ __all__ = [
     "approx_equal",
     "straight_line_depreciation", "depreciation_schedule",
     "depreciation_schedule_ext",
+    # 정규화 run-rate (A2)
+    "median_abs_deviation", "tukey_fences", "seasonal_indices",
+    "normalized_run_rate", "RunRateResult",
+    # LMDI variance decomp (A4/⑤)
+    "variance_decomp_lmdi", "LmdiResult",
+    # stickiness proxy (A3 보조)
+    "stickiness_proxy", "StickinessResult",
 ]

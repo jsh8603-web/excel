@@ -9,6 +9,7 @@ from openpyxl.utils import get_column_letter
 
 from fpna import house_style as hs
 from fpna.templates.base import QCReport, qc_no_formula_errors
+from fpna.view_contract import assert_tie_out
 
 TYPE = "cashflow_13w"
 
@@ -22,6 +23,22 @@ class CashInput:
     weeks: int = 13
     inflows: list = field(default_factory=list)    # 주별 유입
     outflows: list = field(default_factory=list)   # 주별 유출
+    # --- 주간 연속성(선택) ------------------------------------------------
+    # 주별 명시 기초잔액. 주면 각 주 기초 == 직전주 기말 인지 검증(연속성 tie).
+    # 비우면 build 와 동일하게 opening 에서 순현금 누적으로 파생(자기 tie).
+    openings: list = field(default_factory=list)   # list[float], 길이 = weeks
+
+    def week_balances(self):
+        """(openings, closings) 주별 잔액 체인. openings 명시 없으면 연속 파생."""
+        opens, closes = [], []
+        bal = self.opening
+        for w in range(self.weeks):
+            ob = self.openings[w] if (self.openings and w < len(self.openings)) else bal
+            cb = ob + self.inflows[w] - self.outflows[w]
+            opens.append(ob)
+            closes.append(cb)
+            bal = cb
+        return opens, closes
 
 
 def golden_sample() -> CashInput:
@@ -84,10 +101,32 @@ def qc(wb, data: CashInput) -> QCReport:
     qc_no_formula_errors(wb, rep)
     ok_len = len(data.inflows) == data.weeks == len(data.outflows)
     rep.add("주 수 일치", ok_len, "" if ok_len else "inflow/outflow 길이≠weeks")
-    # 파이썬 잔액 시뮬 → 최소잔액 음수 경고
-    bal = data.opening; min_bal = bal
-    for w in range(data.weeks):
-        bal += data.inflows[w] - data.outflows[w]; min_bal = min(min_bal, bal)
+
+    # --- R1 13주 전수성: 주차가 W1..W{weeks} 연속(결측·중복 없음) ----------
+    # 주를 건너뛰면(행 누락) 유동성 갭을 못 본다. weeks==13 + 데이터 길이 정합.
+    full_13w = (data.weeks == 13) and ok_len
+    rep.add("R1 13주 전수성", full_13w,
+            "" if full_13w else "13주 미충족 또는 inflow/outflow 길이 불일치(weeks=%d)"
+            % data.weeks)
+
+    # --- 주간 연속성 tie-out: 각 주 기초 == 직전주 기말 ---------------------
+    # 연속성이 깨지면(누군가 기초를 하드코딩/덮어씀) 잔액 체인이 거짓말 →
+    # 유동성 오판. opening 명시 모드에서 강제로 잡는다.
+    opens, closes = data.week_balances()
+    cont_break = []
+    for w in range(1, data.weeks):
+        if abs(opens[w] - closes[w - 1]) > 1e-9:
+            cont_break.append("W%d(기초=%.0f≠전주기말=%.0f)"
+                              % (w + 1, opens[w], closes[w - 1]))
+    rep.add("주간 연속성(기말==익주기초)", not cont_break,
+            "" if not cont_break else "연속성 단절: " + ", ".join(cont_break[:6]))
+    # 첫 주 기초 == opening tie
+    if opens:
+        assert_tie_out(rep, opens[0], data.opening, tol=1e-9,
+                       name="첫 주 기초 == opening")
+
+    # 파이썬 잔액 시뮬 → 최소잔액 음수 경고 (연속 체인 기준)
+    min_bal = min([data.opening] + closes) if closes else data.opening
     rep.add("유동성(최소잔액≥0)", min_bal >= 0, "최소잔액=%.0f" % min_bal)
     rep.add("단위 표기", bool(data.unit))
     return rep

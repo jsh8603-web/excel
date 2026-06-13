@@ -424,6 +424,55 @@ def assert_recurrence(rep: QCReport, fact: Fact, expected_grid, ledger: AnomalyL
     return missing
 
 
+# --------------------------------------------------------------------------- #
+# R17 — 비율 완전성 (RATIO_NA)                                                #
+#   0분모 / 결측분자 / 단위불일치 → NA(0 또는 inf 박제 금지). 사유 enum 반환. #
+#   레퍼런스(차용): Great Expectations expect_column_values + 회계 비율 규율.  #
+# --------------------------------------------------------------------------- #
+# NA 사유 enum (자문 B10)
+RATIO_NA_REASONS: tuple[str, ...] = ("ZERO_DENOM", "MISSING_NUM", "UNIT_MISMATCH")
+
+
+def ratio_or_na(num, den, *, num_unit: str | None = None, den_unit: str | None = None,
+                require_same_unit: bool = False):
+    """비율 = num/den 또는 NA 사유. 0/x(=0)와 None/x(=NA) 를 구분(자문 B10).
+
+    반환: (value, reason). value 가 float 면 정상(reason=None), value=None 이면 NA(reason 설정).
+      - den == 0           → (None, "ZERO_DENOM")   ← 0 또는 inf 박제 금지
+      - num is None        → (None, "MISSING_NUM")  ← 결측 분자(0 분자와 구분)
+      - 단위 불일치(요구 시) → (None, "UNIT_MISMATCH")
+      - num == 0, den != 0 → (0.0, None)            ← 0/x = 0 (정상, NA 아님)
+    """
+    if require_same_unit and num_unit is not None and den_unit is not None \
+            and num_unit != den_unit:
+        return None, "UNIT_MISMATCH"
+    if num is None:
+        return None, "MISSING_NUM"
+    if den is None or den == 0:
+        return None, "ZERO_DENOM"
+    return num / den, None
+
+
+def assert_ratio_na(rep: QCReport, num, den, ledger: AnomalyLedger | None = None, *,
+                    grain=None, period=None,
+                    num_unit: str | None = None, den_unit: str | None = None,
+                    require_same_unit: bool = False,
+                    name: str = "R17 ratio_na"):
+    """R17 비율완전성 게이트. NA 사유면 ledger 에 RATIO_NA emit(주면).
+
+    반환 = ratio_or_na 의 (value, reason). NA 는 *발견*이라 rep.passed 를 깎지 않는다
+    (자문 R3: 정직한 emit). 은폐는 assert_anomaly_conserved 가 잡는다. NA 사유는
+    detail 로 노출 + ledger 가 있으면 RATIO_NA 1행 추가(grain/period).
+    """
+    val, reason = ratio_or_na(num, den, num_unit=num_unit, den_unit=den_unit,
+                              require_same_unit=require_same_unit)
+    if reason is not None and ledger is not None:
+        ledger.add(grain=grain, period=period, anomaly_type="RATIO_NA",
+                   detail=reason)
+    rep.add(name, True, ("NA(%s)" % reason) if reason else "비율 정상(%.6g)" % val)
+    return val, reason
+
+
 def assert_sign_step(rep: QCReport, fact: Fact, ledger: AnomalyLedger, *,
                      value_key: str = "value", key_keys=None, period_key: str = "period",
                      reversal_ratio: float = 0.5, volume_key: str | None = None,
@@ -508,4 +557,5 @@ __all__ = [
     "ANOMALY_TYPES", "AnomalyLedger",                     # anomaly 2층
     "assert_anomaly_conserved", "assert_recurrence",       # R12
     "assert_sign_step",                                    # R13
+    "RATIO_NA_REASONS", "ratio_or_na", "assert_ratio_na",  # R17
 ]

@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 
 from fpna import finance, house_style as hs
 from fpna.templates.base import (QCReport, qc_no_formula_errors, qc_totals, qc_sign)
+from fpna.view_contract import assert_scenario_aligned, assert_tie_out
 
 TYPE = "variance"
 
@@ -28,6 +29,12 @@ class LineItem:
     cost_nature: bool = False   # True=비용성(증가가 악화). 부호규약 플래그.
     level: int = 0              # 들여쓰기 계층
     is_total: bool = False
+    key: str = ""               # 모집단 키(예: cost center). 빈 값이면 name 으로 fallback.
+
+    @property
+    def pop_key(self) -> str:
+        """R9 모집단 정렬용 키. 명시 key 없으면 항목명 사용."""
+        return self.key or self.name
 
 
 @dataclass
@@ -127,6 +134,8 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
     for it in data.items:
         if it.is_total:
             continue
+        if it.actual is None or it.plan is None:
+            continue  # 미정렬 시나리오 키 — R9 가 잡는다(브리지 누적 제외)
         delta = (it.actual - it.plan)
         signed = -delta if it.cost_nature else delta  # 비용은 부호 반전(이익 기여 기준)
         base = cum if signed >= 0 else cum + signed
@@ -166,17 +175,44 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
 def qc(wb: openpyxl.Workbook, data: VarianceInput) -> QCReport:
     rep = QCReport(TYPE)
     qc_no_formula_errors(wb, rep)
+    nontotal = [it for it in data.items if not it.is_total]
+    totals = [it for it in data.items if it.is_total]
+
+    # --- R9 시나리오 정합: Actual/Budget 가 같은 모집단(키)인지 -----------
+    # variance = Scenario 축의 차이(R9)여야 한다. 한쪽 시나리오에만 존재하는
+    # 키를 0 으로 버리면(silent default) 변동요인 누락·이중계상의 토양.
+    # 각 LineItem 은 plan(=Budget)·actual(=Actual) 두 값을 가지므로
+    # "값이 실제로 존재(None 아님)"하는 키 집합을 두 시나리오로 본다.
+    # ⚠ R9 를 먼저 돌려 None(미정렬) 키를 노출한 뒤, 산술 검증은 None 을 건넌다.
+    actual_keys = [it.pop_key for it in nontotal if it.actual is not None]
+    budget_keys = [it.pop_key for it in nontotal if it.plan is not None]
+    assert_scenario_aligned(rep, actual_keys, budget_keys)
+
     # Δ 재계산 대조(파이썬) — 셀 수식은 Excel 가 계산하므로 의도 검증
     for it in data.items:
+        if it.actual is None or it.plan is None:
+            continue  # R9 가 이미 미정렬로 잡음
         expected = finance.variance(it.actual, it.plan)
         qc_totals("Δ:%s" % it.name, expected, it.actual - it.plan, rep)
     # 총계 항목 = 하위(비총계) 합과 정합한지(부호규약 고려는 생략, 단순 합)
-    nontotal = [it for it in data.items if not it.is_total]
-    totals = [it for it in data.items if it.is_total]
-    if totals and nontotal:
+    if totals and nontotal and all(it.actual is not None for it in nontotal):
         # 영업이익 = 매출 - 비용성 항목 합 (cost_nature=True 는 차감)
         calc = sum((-it.actual if it.cost_nature else it.actual) for it in nontotal)
         qc_totals("총계(실적)", calc, totals[0].actual, rep)
+
+    # --- 브리지 합산 tie: 워터폴 component 합 == 양끝(계획→실적) 차 --------
+    # build 의 브리지는 계획합에서 항목별 signed Δ 를 누적해 실적합에 닿는다.
+    # Σ(signed Δ) == (실적 시작점 − 계획 시작점) 이어야 워터폴이 양끝과 합치.
+    # 미합치 = 변동요인 중복/누락(워터폴이 거짓말).
+    if totals and nontotal and all(
+            (it.actual is not None and it.plan is not None) for it in nontotal):
+        base_total = next((it for it in data.items if it.is_total), data.items[0])
+        bridge_sum = sum((-(it.actual - it.plan) if it.cost_nature
+                          else (it.actual - it.plan)) for it in nontotal)
+        endpoint_diff = base_total.actual - base_total.plan
+        assert_tie_out(rep, bridge_sum, endpoint_diff, tol=0.0,
+                       name="브리지 합산 tie(Σ구간 == 양끝차)")
+
     # 단위/포맷 일관: unit 문자열 존재
     rep.add("단위 표기", bool(data.unit), "unit 비어있음" if not data.unit else "")
     return rep

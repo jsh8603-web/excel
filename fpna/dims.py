@@ -290,6 +290,94 @@ def expected_presence(contract: Contract, periods: list) -> set:
 
 
 # --------------------------------------------------------------------------- #
+# Cuttability rung (A3) — time-to-exit 등급. Contract 속성이 主.              #
+#   레퍼런스(차용): Horngren committed↔discretionary 스펙트럼 + ZBB Pyhrr     #
+#   (연도 불확실) decision-package 개념. ⛔ 단일신호(stickiness)만으로 판정     #
+#   금지 — 등급은 계약 속성(약정·만기·notice)이 主, stickiness 는 보조 modulate. #
+# --------------------------------------------------------------------------- #
+CUTTABILITY_RUNGS: tuple[str, ...] = (
+    "committed",          # 약정으로 잠김 — 해지 전 불가(리스·장기 유지보수)
+    "contractual_locked", # 계약 잔존 — notice/위약 거쳐야 해지 가능
+    "semi_discretionary", # 준재량 — 단기 약정/갱신 임박, 협상 여지
+    "discretionary",      # 재량 — 약정 없음/만료, 즉시 절감 가능
+)
+
+
+def earliest_exit_months(contract: "Contract", *, as_of: _dt.date,
+                         notice_months: int = 0, break_month: int | None = None) -> int | None:
+    """약정 1건의 해지가능 시점까지 남은 개월(time-to-exit).
+
+    earliest_exit = max(통지기간 경과 시점, break clause). evergreen(end=None)이고
+    notice 미정의면 None(=locked, 자문 A3 엣지). 음수는 0 으로 clamp(이미 해지가능).
+    """
+    candidates: list[int] = []
+    if contract.end_date is not None:
+        rem = (contract.end_date.year - as_of.year) * 12 + (contract.end_date.month - as_of.month)
+        candidates.append(max(rem, 0))
+    if notice_months:
+        candidates.append(max(notice_months, 0))
+    if break_month is not None:
+        candidates.append(max(break_month, 0))
+    if not candidates:
+        # evergreen + notice 미정의 → locked (해지 시점 불명)
+        return None
+    return min(candidates)
+
+
+def cuttability_rung(contract: "Contract", *, as_of: _dt.date,
+                     notice_months: int = 0, break_month: int | None = None,
+                     stickiness: float | None = None,
+                     semi_disc_horizon: int = 3,
+                     locked_horizon: int = 12) -> dict:
+    """약정 1건의 cuttability 등급(time-to-exit 분해). Contract 속성이 主.
+
+    판정(主 = 계약 속성):
+      - status != active        → discretionary (이미 해지/중단 — 절감 실현)
+      - exit_m is None(locked)  → committed (해지 시점 불명 = 가장 잠김)
+      - exit_m == 0             → discretionary (지금 끊을 수 있음)
+      - exit_m ≤ semi_disc      → semi_discretionary
+      - exit_m ≤ locked         → contractual_locked
+      - else                    → committed (장기 약정)
+
+    보조(modulate, ⛔ 단일신호 금지): stickiness(ABJ 비대칭)는 등급을 *바꾸지 않고*
+    confidence/메모로만 부착. 높은 stickiness = "절감해도 잘 안 줄어든다" 경고 신호.
+
+    반환 dict: rung / earliest_exit_m / drivers(판정 근거 list) / stickiness_note.
+    """
+    drivers: list[str] = []
+    exit_m = earliest_exit_months(contract, as_of=as_of,
+                                  notice_months=notice_months, break_month=break_month)
+    if contract.status != "active":
+        rung = "discretionary"
+        drivers.append("status=%s (비활성 — 절감 실현)" % contract.status)
+    elif exit_m is None:
+        rung = "committed"
+        drivers.append("evergreen+notice 미정의 → locked")
+    elif exit_m == 0:
+        rung = "discretionary"
+        drivers.append("즉시 해지가능(exit=0)")
+    elif exit_m <= semi_disc_horizon:
+        rung = "semi_discretionary"
+        drivers.append("해지까지 %dM ≤ %dM(준재량)" % (exit_m, semi_disc_horizon))
+    elif exit_m <= locked_horizon:
+        rung = "contractual_locked"
+        drivers.append("해지까지 %dM ≤ %dM(계약잔존)" % (exit_m, locked_horizon))
+    else:
+        rung = "committed"
+        drivers.append("해지까지 %dM(장기 약정)" % exit_m)
+
+    note = ""
+    if stickiness is not None:
+        # ⛔ 보조 신호로만 — 등급을 바꾸지 않는다.
+        if stickiness > 0:
+            note = "sticky(비대칭 %.2f): 절감해도 비용 점착 — 실현률 주의" % stickiness
+        else:
+            note = "non-sticky(%.2f): 활동 연동 절감 양호" % stickiness
+    return {"rung": rung, "earliest_exit_m": exit_m, "drivers": drivers,
+            "stickiness_note": note}
+
+
+# --------------------------------------------------------------------------- #
 # 내부 tidy fact 표현                                                         #
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -332,6 +420,11 @@ __all__ = [
     "Account", "account_leaves", "rollup",
     # CostCenter / Asset
     "CostCenter", "Asset",
+    # Contract (R12/R14/cuttability 공통 전제)
+    "RECURRENCE", "CONTRACT_STATUS", "LIFECYCLE_STATES",
+    "Contract", "expected_presence",
+    # Cuttability (A3)
+    "CUTTABILITY_RUNGS", "earliest_exit_months", "cuttability_rung",
     # Fact
     "Fact",
 ]

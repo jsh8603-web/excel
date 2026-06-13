@@ -23,6 +23,11 @@ _MODULES = {
     "fc_depreciation_schedule": "fpna.templates.fc_depreciation_schedule",
     "fc_variance_bridge": "fpna.templates.fc_variance_bridge",
     "fc_maturity_wall": "fpna.templates.fc_maturity_wall",
+    "fc_runrate_normalized": "fpna.templates.fc_runrate_normalized",
+    "fc_cuttability_ladder": "fpna.templates.fc_cuttability_ladder",
+    "fc_driver_unitcost": "fpna.templates.fc_driver_unitcost",
+    "fc_forward_da": "fpna.templates.fc_forward_da",
+    "fc_prepaid_rollforward": "fpna.templates.fc_prepaid_rollforward",
 }
 
 
