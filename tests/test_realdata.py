@@ -190,6 +190,52 @@ class AnalyzeTest(unittest.TestCase):
             self.assertEqual(tmpl["목록"], "listing")          # measure 0 → 정리표
             self.assertEqual(res["recommendation"]["kind"], "multi")
 
+    def test_cross_sheet_link_forces_pack(self):
+        """시트 간 수식 연결(=Sheet!) 감지 → recommendation kind='linked'(pack 강제)."""
+        import os
+        import tempfile
+        from openpyxl import Workbook
+        from fpna.analyze import analyze_workbook
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "원장"
+        ws1.append(["항목", "금액"])
+        ws1.append(["매출", 1000])
+        ws1.append(["원가", 600])
+        ws2 = wb.create_sheet("요약")
+        ws2.append(["지표", "값"])
+        ws2.append(["합계", "=SUMIFS(원장!B:B,원장!A:A,\"매출\")"])  # 크로스시트 참조
+        ws2.append(["참조", "=원장!B2"])
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "linked.xlsx")
+            wb.save(p)
+            res = analyze_workbook(p)
+            self.assertTrue(res["cross_refs"], "크로스시트 참조 미감지")
+            self.assertIn("원장", res["cross_refs"].get("요약", set()))
+            self.assertEqual(res["recommendation"]["kind"], "linked")
+            self.assertIn("pack", res["recommendation"]["detail"])
+
+    def test_no_link_not_forced(self):
+        """연결 없는 다중시트는 linked 아님(기존 multi/single 유지)."""
+        import os
+        import tempfile
+        from openpyxl import Workbook
+        from fpna.analyze import analyze_workbook
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "A"
+        ws1.append(["항목", "금액"])
+        ws1.append(["x", 1])
+        ws2 = wb.create_sheet("B")
+        ws2.append(["항목", "금액"])
+        ws2.append(["y", 2])
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "indep.xlsx")
+            wb.save(p)
+            res = analyze_workbook(p)
+            self.assertEqual(res["cross_refs"], {})
+            self.assertNotEqual(res["recommendation"]["kind"], "linked")
+
     def test_cmd_analyze_rc(self):
         import os
         import tempfile

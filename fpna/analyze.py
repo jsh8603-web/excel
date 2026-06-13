@@ -23,6 +23,37 @@ from fpna.dispatcher import recommend_from_roles
 from fpna.infer import infer_columns, summarize
 
 
+def _cross_sheet_refs(path: str) -> dict:
+    """워크북 수식에서 시트 간 참조 감지 → {시트: {참조하는 다른 시트들}}.
+
+    analyze 기본 경로는 data_only(값만) 라 시트 간 수식 연결을 못 본다. 여기서 수식 모드로
+    한 번 더 열어 '시트명!' / '시트명'! 패턴(SUMIFS·VLOOKUP·=Sheet2!A1 등 크로스시트
+    의존 = 연동 신호)을 스캔한다. 연결이 있으면 _recommend 가 pack 을 강제 유도한다.
+    """
+    refs: dict = {}
+    try:
+        wb = openpyxl.load_workbook(path, data_only=False, read_only=True)
+    except Exception:
+        return refs
+    try:
+        names = list(wb.sheetnames)
+        for name in names:
+            hit: set = set()
+            for row in wb[name].iter_rows():
+                for c in row:
+                    v = c.value
+                    if not (isinstance(v, str) and v.startswith("=")):
+                        continue
+                    for other in names:
+                        if other != name and ((other + "!") in v or ("'%s'!" % other) in v):
+                            hit.add(other)
+            if hit:
+                refs[name] = hit
+    finally:
+        wb.close()
+    return refs
+
+
 def _sheet_to_rows(ws, sample: int) -> tuple:
     """워크시트 → (headers, list[dict]). 첫 비어있지 않은 행=헤더, 이후 데이터."""
     headers = None
@@ -71,14 +102,30 @@ def analyze_workbook(path: str, *, sample: int = 50) -> dict:
                            "summary": summ})
     finally:
         wb.close()
-    return {"sheets": sheets, "recommendation": _recommend(sheets)}
+    cross = _cross_sheet_refs(path)        # 시트 간 수식 연결(연동 신호) 감지
+    return {"sheets": sheets, "cross_refs": cross,
+            "recommendation": _recommend(sheets, cross)}
 
 
-def _recommend(sheets: list) -> dict:
-    """시트 조합 → 워크북 수준 추천(단일/다중연동/없음)."""
+def _recommend(sheets: list, cross: dict | None = None) -> dict:
+    """시트 조합 → 워크북 수준 추천(연동/단일/다중/없음).
+
+    ★cross(시트 간 수식 연결)가 있으면 최우선으로 'linked' 판정 — 독립 분해하면 원본
+    SUMIFS 등 연결이 끊기므로 pack 을 강제 유도한다(인지 못 해 쪼개는 사고 차단).
+    """
+    cross = cross or {}
     data_sheets = [s for s in sheets if s["template"]]
     if not data_sheets:
         return {"kind": "none", "detail": "데이터 시트 없음(빈/비정형) — ingest 로 정형화 먼저"}
+    # ★연동 감지: 시트 간 수식 참조가 하나라도 있으면 pack 필수(독립 분해 금지)
+    if cross:
+        n_links = sum(len(v) for v in cross.values())
+        pairs = "; ".join("%s→{%s}" % (k, ",".join(sorted(v))) for k, v in sorted(cross.items()))
+        return {"kind": "linked",
+                "detail": "★시트 간 연결 %d개 발견(%s) — 이 워크북은 연동돼 있다. 각 시트를 "
+                "독립 분해하면 SUMIFS 등 연결이 끊긴다. pack(공유 facts 재현, packs.md)으로 "
+                "묶어라(단일/시트별 분해 금지). 원본 라이브 수식 자체는 재현 안 됨 — 값 정합만."
+                % (n_links, pairs)}
     if len(data_sheets) == 1:
         s = data_sheets[0]
         return {"kind": "single", "template": s["template"],
@@ -91,4 +138,5 @@ def _recommend(sheets: list) -> dict:
             % (len(data_sheets), listed)}
 
 
-__all__ = ["analyze_workbook", "_sheet_to_rows", "_shape_tag", "_recommend"]
+__all__ = ["analyze_workbook", "_sheet_to_rows", "_shape_tag", "_recommend",
+           "_cross_sheet_refs"]
