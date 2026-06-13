@@ -40,6 +40,10 @@ _MODULES = {
     "working_capital": "fpna.templates.working_capital",
     "cost_allocation": "fpna.templates.cost_allocation",
     "dupont_roic": "fpna.templates.dupont_roic",
+    # 일반 라벨+단일숫자 표(명세/내역/집계) — 특정 분석형이 아닐 때의 풍부한 기본형.
+    # ★프로파일(물량·상각비·투자비 등)은 *예시 프리셋*일 뿐, mixed+임의 FieldSpec 으로
+    #   어떤 라벨+단일숫자(거리·온도·건수 등)든 받는 범용 템플릿.
+    "metric_table": "fpna.templates.metric_table",
 }
 
 
