@@ -92,6 +92,18 @@ def cmd_profile(args):
     out = rest[0] if rest else "out/profile_spec.yaml"
     import os
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    # long tidy(ingest 산출) 자동 감지 → wide mart 변환. ingest→profile 포맷 격차 보완
+    # (long 직행 시 measure 가 value 1개로 뭉개지고 메타 컬럼이 통계에 끼어든다).
+    import csv as _csv
+    from fpna.ingest.tidy_mart import is_long_tidy, tidy_to_mart
+    with open(path, encoding="utf-8-sig", newline="") as _f:
+        _hdr = [h.strip() for h in next(_csv.reader(_f), [])]
+    if is_long_tidy(_hdr):
+        _mart = (path[:-4] if path.lower().endswith(".csv") else path) + "_mart.csv"
+        _dims, _metrics, _n = tidy_to_mart(path, _mart)
+        _print("long tidy 감지 → wide mart 변환: %s (dim=%s, metric=%d, %d행)"
+               % (_mart, _dims, len(_metrics), _n))
+        path = _mart
     spec = run_profile(path, out, date_col=date_col, measures=measures,
                        grain=grain, include_member_names=include_names)
     tname = next(iter(spec["tables"]))

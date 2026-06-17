@@ -70,13 +70,20 @@ def profile_sheet(sheet, tmp_dir: str, idx: int) -> dict | None:
     # 파일명은 시트명 대신 인덱스 — Windows 예약어(NUL/CON)·끝 점·공백 시트명이 경로를 깨뜨림.
     tmp = os.path.join(tmp_dir, "_tmp_%d.csv" % idx)
     df.to_csv(tmp, index=False, encoding="utf-8-sig")
+    # COM 시트가 long tidy 포맷이면 wide 변환 — main profile 경로(cmd_profile)와 일관.
+    from fpna.ingest.tidy_mart import is_long_tidy, tidy_to_mart
+    src = tmp
+    if is_long_tidy([str(c).strip() for c in df.columns]):
+        src = os.path.join(tmp_dir, "_mart_%d.csv" % idx)
+        tidy_to_mart(tmp, src)
     try:
-        return profile_table(tmp, table_name=sheet.name)
+        return profile_table(src, table_name=sheet.name)
     finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        for _p in {tmp, src}:
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
 
 
 def build_bundle(xlsx_path: str, *, bas_path: str, sheets: list[str] | None = None) -> dict:
@@ -121,17 +128,19 @@ def build_bundle(xlsx_path: str, *, bas_path: str, sheets: list[str] | None = No
 
 
 def bundle_to_text(bundle: dict) -> str:
-    """메일 본문 운반용 단일 텍스트 — 구조 리포트 + 통계 SHAPE(yaml). 실데이터 값 없음."""
-    out = [
-        "# === EXCEL SHAPE BUNDLE (schema-only, no data values) ===",
-        "# source: %s" % bundle.get("source"),
-        "",
-        "## --- STRUCTURE (MetaCollector v1.2.1) ---",
-        bundle.get("structure_report") or "(none)",
-        "",
-        "## --- STATISTICAL SHAPE (profile, 8 axes) ---",
-        emit_yaml({"tables": bundle.get("tables", {})}),
-    ]
+    """단일 '유효 yaml' 텍스트 — synthschema(load_spec)가 tables 를 직접 파싱 가능.
+
+    구조 리포트(MetaCollector)는 yaml 블록 스칼라(|)로 담아 '[Sheets]' 같은 라인이
+    yaml 문법과 충돌하지 않게 한다 → synthschema 는 tables 만 소비하고 structure_report 는 무시.
+    schema-only(셀 값 없음). 운반: encrypt --mail.
+    """
+    out = ["# EXCEL SHAPE BUNDLE (schema-only, no data values)",
+           "source: %s" % (bundle.get("source") or "unknown"),
+           "structure_report: |"]
+    for ln in (bundle.get("structure_report") or "(none)").splitlines() or ["(none)"]:
+        out.append("  " + ln)            # 2-space indent → 블록 스칼라 본문
+    out.append("")
+    out.append(emit_yaml({"tables": bundle.get("tables", {})}))   # tables: 루트
     return "\n".join(out)
 
 
