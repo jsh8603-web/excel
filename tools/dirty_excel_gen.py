@@ -41,7 +41,6 @@ def gen_one(seed: int, out_xlsx: str, out_expected: str) -> dict:
         "subtotal": rng.random() < 0.4,        # 소계행(볼드)
         "at_format": rng.random() < 0.4,       # 일부 셀 @(텍스트)형식 숫자
         "footnote": rng.random() < 0.3,        # 헤더 각주마커
-        "ditto": rng.random() < 0.3,           # 첫 열 라벨 일부 빈칸(상동)
     }
     scale = 1_000_000 if opt["unit_scale"] else 1
 
@@ -60,14 +59,8 @@ def gen_one(seed: int, out_xlsx: str, out_expected: str) -> dict:
     r += 1
 
     expected: list[tuple[str, str, float]] = []
-    prev_acc = None
     for a in accounts:
-        # ditto: 같은 계정 반복 시 라벨 빈칸(여기선 단일이라 첫 열 약하게 흉내)
-        label = a
-        if opt["ditto"] and prev_acc is not None and rng.random() < 0.3:
-            label = None
-        ws.cell(r, 1, label)
-        prev_acc = a
+        ws.cell(r, 1, a)
         for j, y in enumerate(years):
             disp = rng.randint(100, 9999)         # 표시값(스케일 적용 전)
             val = disp * scale                    # 복원 기대 원본값
@@ -114,9 +107,9 @@ def _main(argv=None):
     metas = gen_corpus(args.n, args.out, args.seed0)
     on = lambda k: sum(1 for m in metas if m[k])  # noqa: E731
     print("생성: %d개 → %s" % (len(metas), args.out))
-    print("패턴 분포: unit=%d int_year=%d subtotal=%d at_fmt=%d footnote=%d ditto=%d"
+    print("패턴 분포: unit=%d int_year=%d subtotal=%d at_fmt=%d footnote=%d"
           % (on("unit_scale"), on("int_year"), on("subtotal"),
-             on("at_format"), on("footnote"), on("ditto")))
+             on("at_format"), on("footnote")))
 
 
 if __name__ == "__main__":

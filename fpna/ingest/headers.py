@@ -82,16 +82,10 @@ def _value_like(c: Cell) -> bool:
     """
     if c.is_blank:
         return False
-    if c.data_type == T_NUMERIC:
-        # 4자리 연도 정수(1900~2100)는 헤더일 가능성 → 모호하므로 헤더 취급.
-        # 문자열 '2024' 의 bare-4자리 보호(아래)와 동일. 정수 연도 헤더가 데이터로
-        # 오인돼 언피벗이 붕괴하는 결함 방지. 금액(예 5000)과 충돌 않게 연도 범위 한정.
-        v = c.value
-        if isinstance(v, int) and not isinstance(v, bool) and 1900 <= v <= 2100:
-            return False
-        return True
     # 오류값(#DIV/0! 등)도 데이터 슬롯을 차지 → 열을 데이터 열로 유지(보존 위해).
-    if c.data_type in (T_DATE, T_ERROR):
+    # 정수 연도 헤더 보호는 셀 단위가 아니라 행 맥락(_is_year_header_row)에서 처리한다 —
+    # 데이터 값이 우연히 연도 범위(예 1932)여도 값으로 유지하기 위함.
+    if c.data_type in (T_NUMERIC, T_DATE, T_ERROR):
         return True
     if c.data_type == T_CHARACTER:
         s = str(c.value).strip()
@@ -133,6 +127,19 @@ def _row_value_frac(block_cells: list[Cell], row: int) -> float:
     return sum(1 for c in rc if _value_like(c)) / len(rc)
 
 
+def _is_year_header_row(block_cells: list[Cell], row: int) -> bool:
+    """행의 정수 숫자셀이 2개 이상이고 전부 연도범위(1900~2100)면 연도 헤더행.
+
+    정수 연도 헤더(2024,2025)는 _value_like 상 값이라 데이터로 오인되기 쉬운데,
+    '숫자가 전부 연도' 패턴으로 헤더임을 식별한다. 데이터행은 값 중 일부만 우연히
+    연도범위(예 1932)라 all() 에서 걸러져 값으로 유지된다.
+    """
+    nums = [c.value for c in block_cells
+            if c.row == row and c.data_type == T_NUMERIC
+            and isinstance(c.value, int) and not isinstance(c.value, bool)]
+    return len(nums) >= 2 and all(1900 <= v <= 2100 for v in nums)
+
+
 def _col_value_frac(block_cells: list[Cell], col: int, data_start_row: int) -> float:
     cc = [c for c in block_cells if c.col == col and not c.is_blank
           and c.row >= data_start_row]
@@ -154,7 +161,9 @@ def classify_cells(block_cells: list[Cell], b: Block) -> tuple[int, int]:
     top_rows = 0
     for r in range(b.min_row, b.max_row + 1):
         frac = _row_value_frac(block_cells, r)
-        if frac >= 0.5:        # 값 우세 행 = 데이터 시작
+        # 연도 헤더행(숫자가 전부 1900~2100)은 frac 높아도 헤더로 — 정수연도 헤더 보호.
+        # 데이터행은 값 중 일부만 우연히 연도라 _is_year_header_row 에서 걸러진다.
+        if frac >= 0.5 and not _is_year_header_row(block_cells, r):
             break
         top_rows += 1          # frac < 0.5(헤더) 또는 빈 행
     if top_rows > b.n_rows - 1:    # 전부 헤더로 잡히면(데이터 없음) 마지막 1행은 데이터로

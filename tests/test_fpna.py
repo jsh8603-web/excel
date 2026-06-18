@@ -348,6 +348,20 @@ class TestIngest(unittest.TestCase):
         self.assertIn(("매출", "2024"), rows)        # 연도가 데이터로 둔갑 안 하고 period 복원
         self.assertEqual(rows[("매출", "2024")].value, 1000 * 1_000_000)
 
+    def test_g12_year_range_data_value(self):
+        """G12: 데이터 값이 우연히 연도범위(1900~2100)여도 헤더로 안 먹히고 값 유지.
+
+        fuzz 회귀(dirty_129): 정수연도 보호가 셀 단위라 데이터 1932 를 연도로 오인 →
+        그 행이 헤더로 흡수돼 데이터 손실. 행 맥락(_is_year_header_row)으로 수정."""
+        def build(ws):
+            ws["A1"], ws["B1"], ws["C1"] = "계정", 2024, 2025   # 정수 연도 헤더(행 전부 연도)
+            ws["A2"], ws["B2"], ws["C2"] = "매출", 1932, 8831    # 1932=연도범위지만 데이터
+            ws["A3"], ws["B3"], ws["C3"] = "비용", 2087, 600
+        res = self._ingest_wb(build)
+        rows = {(r.entity, r.period): r for r in res.tidy_rows}
+        self.assertIn(("매출", "2024"), rows)        # 매출 행이 헤더로 안 먹힘
+        self.assertEqual(rows[("매출", "2024")].value, 1932)   # 1932 가 값으로 유지
+
 
 class TestDispatch(unittest.TestCase):
     def test_keyword_routing(self):
