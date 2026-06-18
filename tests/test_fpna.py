@@ -362,6 +362,38 @@ class TestIngest(unittest.TestCase):
         self.assertIn(("매출", "2024"), rows)        # 매출 행이 헤더로 안 먹힘
         self.assertEqual(rows[("매출", "2024")].value, 1932)   # 1932 가 값으로 유지
 
+    def test_g13_meta_header_blank_gap_timeseries(self):
+        """G13: 다층 메타(제목·발행일) + 텍스트 멀티헤더 + 빈행 + 시계열(시간=행라벨).
+
+        실데이터(ONS 노동시장) 회귀: 헤더밴드가 텍스트 위주라 density 미달로 데이터블록과
+        분리 → tidy 0(무음실패) 였던 것을 absorb_header_bands 병합으로 해소. 추가로
+        ① _value_like 마커강화: 'rate (%)'·제목의 '-' 가 값으로 오인 안 됨,
+        ② classify lookahead: 발행일 datetime(단발 메타)에서 헤더밴드가 조기종료 안 함,
+        ③ 행라벨(기간) → period 승격(시계열 시간축 보존)."""
+        import datetime as _dt
+
+        def build(ws):
+            ws["A1"] = "Table X: Labour Force - summary"   # 제목(하이픈 = 마커강화 검증)
+            ws["A2"] = "Date of publication:"
+            ws["B2"] = _dt.datetime(2020, 12, 15)          # 발행일 datetime(단발 메타 노이즈)
+            # A3 빈행
+            ws["B4"], ws["C4"], ws["D4"] = "Employment", "Unemployed", "rate (%)"  # 지표(텍스트)
+            ws["A5"] = "id"
+            ws["B5"], ws["C5"], ws["D5"] = "level", "level", "pct"
+            ws["A6"], ws["B6"], ws["C6"], ws["D6"] = "Jan-Mar 2020", 100, 200, 63
+            ws["A7"], ws["B7"], ws["C7"], ws["D7"] = "Feb-Apr 2020", 110, 210, 64
+            ws["A8"], ws["B8"], ws["C8"], ws["D8"] = "Mar-May 2020", 120, 220, 65
+        res = self._ingest_wb(build)
+        self.assertTrue(res.tidy_rows, "tidy 0(무음실패) 아니어야 함")
+        periods = {str(r.period) for r in res.tidy_rows}
+        self.assertIn("Jan-Mar 2020", periods)             # ③ 시간 행라벨 → period 승격
+        # ② 발행일 datetime 이 period 로 새지 않음(메타행은 헤더밴드로 흡수, 데이터 아님)
+        self.assertFalse(any("2020-12-15" in p for p in periods))
+        # value 보존 + ① 'rate (%)' 가 데이터로 오인되지 않아 100 이 살아있음(role 무관)
+        vals = [r.value for r in res.tidy_rows if str(r.period) == "Jan-Mar 2020"]
+        self.assertIn(100, vals)
+        self.assertIn(63, vals)                            # 'rate (%)' 헤더 아래 값 보존
+
 
 class TestDispatch(unittest.TestCase):
     def test_keyword_routing(self):

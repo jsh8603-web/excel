@@ -29,8 +29,8 @@ import fpna._bootstrap  # noqa: F401
 import openpyxl
 
 from .cells import as_cells, T_NUMERIC, T_DATE, ERROR_LITERALS
-from .detect import (detect_blocks, cells_in_block, strip_title_rows,
-                     strip_footnote_rows, strip_repeated_header_rows,
+from .detect import (detect_blocks, absorb_header_bands, cells_in_block,
+                     strip_title_rows, strip_footnote_rows, strip_repeated_header_rows,
                      label_is_subtotal, subtotal_signal_score, Block, UNIT_RE)
 from .headers import (unpivot_block, unmerge_fill, LongRow,
                       classify_cells, fill_down_ditto, no_header_suspect)
@@ -106,6 +106,11 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             entity = row_labels[0]
             if len(row_labels) > 1:
                 metric_parts = row_labels[1:] + metric_parts
+        # 시계열(행=시간축): 열헤더에서 period 를 못 찾았는데 가장 바깥 행라벨이 기간이면
+        # 행라벨을 period 로 승격(ONS 류 wide 시계열). 아니면 행라벨은 entity 유지.
+        if period is None and entity is not None and _looks_like_period(entity):
+            period = entity
+            entity = None
         metric = " > ".join(metric_parts) if metric_parts else None
 
         coord = "R%dC%d" % (lr.row, lr.col)
@@ -382,6 +387,9 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
                     break
 
         blocks = detect_blocks(cells)
+        # 헤더밴드(텍스트 위주 → density 미달로 블록 미형성)가 빈행으로 데이터블록과
+        # 분리된 경우(ONS류) 흡수 — 데이터블록 헤더 0 → tidy 0 무음실패 방지.
+        blocks = absorb_header_bands(cells, blocks)
         for bi, b in enumerate(blocks):
             n_blocks += 1
             bc = cells_in_block(cells, b)

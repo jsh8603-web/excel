@@ -17,6 +17,10 @@ from .cells import (Cell, DATA, HEADER, LABEL, CORNER, BLANK,
                     T_NUMERIC, T_DATE, T_CHARACTER, T_ERROR)
 from .detect import Block, UNIT_RE
 
+# top header band 판정: 연속 N행이 모두 데이터여야 '데이터 본체 시작'으로 인정.
+# 단발 고-frac 메타행(발행일·연락처)에서 헤더밴드가 조기 종료되는 것을 막는다.
+MIN_DATA_RUN = 2
+
 
 def unmerge_fill(cells: list[Cell]) -> None:
     """병합영역 anchor 의 값/타입을 영역 내 빈 셀에 전파(in-place).
@@ -41,8 +45,16 @@ def unmerge_fill(cells: list[Cell]) -> None:
 
 import re as _re
 
-# 숫자값 '마커'(괄호/세모/%/콤마/소수점/부호). bare 4자리(연도)와 데이터 숫자를 구분.
-_MARKER_RE = _re.compile(r"[(),%△▲\-+.]|\d{1,3},\d{3}")
+# 숫자값 '마커' — ★숫자 동반 패턴만(괄호음수/세모음수/%/천단위콤마/부호숫자).
+# 단독 구두점([(),.\-] 등)은 헤더 텍스트 문장('rate (%)', 'United Kingdom (thousands)',
+# 'Jan-Mar 1971', 'labour.market@ons')에서도 흔해 값 오인을 일으킨다 → 숫자 인접만 매치.
+_MARKER_RE = _re.compile(
+    r"\(\s*[\d.,]+\s*\)"        # (1,234) 괄호음수
+    r"|[△▲]\s*[\d.,]"          # △30 세모음수
+    r"|[\d.,]+\s*%"             # 85% 퍼센트(숫자 앞)
+    r"|\d{1,3},\d{3}"          # 1,234 천단위 콤마
+    r"|^\s*[+\-]\s*[\d.,]+\s*$"  # -30 +30 (전체가 부호+숫자)
+)
 
 
 def fill_down_ditto(cells: list[Cell], cols: list[int],
@@ -157,15 +169,34 @@ def classify_cells(block_cells: list[Cell], b: Block) -> tuple[int, int]:
       2) left band = 왼쪽에서부터, 데이터행 기준 value_like 비율 < 0.5 인 열.
       3) 데이터 영역만으로 열 타입 재집계 → 값 분류.
     """
-    # 1) top header band
+    # 1) top header band — 연속 데이터 본체가 시작되는 지점까지.
+    #   단발 고-frac 행(발행일 datetime·연락처 등 메타 노이즈)에서 끊기지 않도록
+    #   lookahead 로 '연속 MIN_DATA_RUN 행이 모두 데이터' 인 첫 지점을 본체 시작으로 본다.
+    #   (ONS류: 제목/발행일/문의/지역/멀티헤더 + 빈행 + 시계열. 메타에 값스러운 셀이 섞임.)
+    def _is_data_row(rr: int) -> bool:
+        f = _row_value_frac(block_cells, rr)
+        # 연도 헤더행(숫자 전부 1900~2100)은 frac 높아도 헤더 — 정수연도 헤더 보호.
+        return f >= 0.5 and not _is_year_header_row(block_cells, rr)
+
     top_rows = 0
-    for r in range(b.min_row, b.max_row + 1):
-        frac = _row_value_frac(block_cells, r)
-        # 연도 헤더행(숫자가 전부 1900~2100)은 frac 높아도 헤더로 — 정수연도 헤더 보호.
-        # 데이터행은 값 중 일부만 우연히 연도라 _is_year_header_row 에서 걸러진다.
-        if frac >= 0.5 and not _is_year_header_row(block_cells, r):
-            break
-        top_rows += 1          # frac < 0.5(헤더) 또는 빈 행
+    r = b.min_row
+    while r <= b.max_row:
+        if _is_data_row(r):
+            # lookahead: 이 행부터 연속 데이터인가(메타 단발이면 헤더밴드로 흡수)?
+            run = 0
+            rr = r
+            while rr <= b.max_row and run < MIN_DATA_RUN:
+                if _is_data_row(rr):
+                    run += 1
+                    rr += 1
+                else:
+                    break
+            remaining = b.max_row - r + 1
+            if run >= min(MIN_DATA_RUN, remaining):   # 끝근처(데이터 1행 표)도 인정
+                break
+            # 단발 고-frac(메타) → 헤더밴드로 흡수하고 계속
+        top_rows += 1          # frac < 0.5(헤더) / 빈행 / 단발 메타
+        r += 1
     if top_rows > b.n_rows - 1:    # 전부 헤더로 잡히면(데이터 없음) 마지막 1행은 데이터로
         top_rows = max(0, b.n_rows - 1)
     data_start_row = b.min_row + top_rows

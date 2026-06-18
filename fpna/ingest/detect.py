@@ -103,6 +103,98 @@ def detect_blocks(cells: list[Cell], *, gap: int = GAP_TOL,
     return blocks
 
 
+def absorb_header_bands(cells: list[Cell], blocks: list[Block], *,
+                        max_gap: int = 1, max_absorb: int = 6) -> list[Block]:
+    """데이터블록 위쪽에 빈행 gap 으로 떨어진 헤더밴드를 블록에 흡수(min_row 확장).
+
+    동기(ONS류 실데이터): 다층 메타(제목/발행일/지역) + 멀티헤더(지표/단위/코드) +
+    빈행 1줄 + 시계열 데이터. 헤더밴드는 텍스트 위주라 bbox 채움밀도가 MIN_DENSITY
+    미달 → 별도 블록조차 안 잡히고, 빈행이 데이터블록과 분리 → 데이터블록에 헤더 0 →
+    behead 컬럼명 None → tidy 0(무음 실패). 데이터블록 위 인접 헤더밴드를 끌어와 해소.
+
+    흡수 조건(모두 충족해야 한 행 흡수):
+      (a) 빈행은 gap 으로 건너뜀(누적 ≤ max_gap, 초과 시 중단).
+      (b) 그 행의 채워진 셀 중 블록 열범위[min_col,max_col] 내 개수가 블록폭의 절반↑
+          (제목/단위 같은 1~2칸 메타행은 폭 미달로 자동 배제 — 다중표 회귀 안전).
+      (c) 텍스트 위주(블록 내 셀의 숫자/날짜 비율 ≤ 0.5) — 숫자 데이터행 오흡수 차단.
+      (d) 위가 다른 블록 영역이면 중단(가로/세로 다중표 보호).
+    블록 수는 불변(min_row 만 낮춤). 결정적.
+    """
+    if not blocks:
+        return blocks
+    occ_by_row: dict[int, set] = {}
+    numlike: set = set()
+    for c in cells:
+        if c.is_blank:
+            continue
+        occ_by_row.setdefault(c.row, set()).add(c.col)
+        if c.data_type in (T_NUMERIC, T_DATE):
+            numlike.add((c.row, c.col))
+    # 행 → 소속 블록 인덱스(unmerge 후엔 헤더밴드도 별도 블록일 수 있어 '병합'이 필요).
+    owner: dict[int, int] = {}
+    for idx, b in enumerate(blocks):
+        for r in range(b.min_row, b.max_row + 1):
+            owner[r] = idx
+    removed: set = set()
+
+    for idx, b in enumerate(blocks):
+        if idx in removed:
+            continue
+        # 헤더밴드 정렬 폭 하한. 하한 3 → 좁은 표에서 'A2:라벨 / B2:값' 2칸 메타행
+        # (발행일·연락처)이 폭 절반을 넘겨 흡수되는 것을 막는다(ONS 류 폭 큰 표는 //2).
+        half = max(3, b.n_cols // 2)
+        gap = 0
+        rr = b.min_row - 1
+        new_min = b.min_row
+        absorbed = 0
+        while rr >= 1 and absorbed < max_absorb:
+            cols = occ_by_row.get(rr)
+            if not cols:                         # (a) 빈행 — gap 건너뜀
+                gap += 1
+                if gap > max_gap:
+                    break
+                rr -= 1
+                continue
+            oidx = owner.get(rr)
+            if oidx == idx:                      # 자기 블록 도달 — 중단
+                break
+            in_cols = [c for c in cols if b.min_col <= c <= b.max_col]
+            if len(in_cols) < half:              # (b) 폭 미달(메타행) — 중단
+                break
+            nnum = sum(1 for c in in_cols if (rr, c) in numlike)
+            if nnum > len(in_cols) * 0.5:        # (c) 숫자 위주 = 데이터행
+                break
+            if oidx is not None and oidx != idx:
+                # (d) 위가 헤더성 별도 블록 → 데이터 열범위와 정렬되는 '하단 연속 행'만
+                #     흡수한다. 위쪽 메타행(제목/발행일/문의 — 폭 미달)은 경계에서 제외해
+                #     metric/period 오염(발행일이 period 로 새는 것)을 막는다. 블록은 제거.
+                ob = blocks[oidx]
+                m = ob.max_row
+                while m >= ob.min_row:
+                    mcols = occ_by_row.get(m, set())
+                    m_in = [c for c in mcols if b.min_col <= c <= b.max_col]
+                    m_num = sum(1 for c in m_in if (m, c) in numlike)
+                    if len(m_in) >= half and m_num <= len(m_in) * 0.5:
+                        m -= 1
+                    else:
+                        break
+                band_top = m + 1                 # 정렬 헤더밴드 시작(메타행 위로 제외)
+                if band_top <= ob.max_row:        # 정렬 행이 하나라도 있으면 흡수
+                    new_min = min(new_min, band_top)
+                removed.add(oidx)
+                break
+            # 블록 미소속 occupied 헤더밴드 → 한 행씩 흡수.
+            new_min = rr
+            absorbed += 1
+            gap = 0
+            rr -= 1
+        if new_min < b.min_row:
+            b.min_row = new_min
+    out = [b for i, b in enumerate(blocks) if i not in removed]
+    out.sort(key=lambda x: (x.min_row, x.min_col))
+    return out
+
+
 def cells_in_block(cells: list[Cell], b: Block) -> list[Cell]:
     return [c for c in cells if b.contains(c.row, c.col)]
 
@@ -278,7 +370,7 @@ def subtotal_signal_score(label, *, bold: bool = False,
 
 
 __all__ = [
-    "Block", "detect_blocks", "cells_in_block",
+    "Block", "detect_blocks", "absorb_header_bands", "cells_in_block",
     "strip_title_rows", "strip_footnote_rows", "strip_repeated_header_rows",
     "label_is_subtotal",
     "subtotal_signal_score", "is_red_font", "RED_FONT_WHITELIST",
