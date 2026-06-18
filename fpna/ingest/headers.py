@@ -221,6 +221,7 @@ class LongRow:
     label_bold: bool = False          # 행라벨 폰트 볼드(소계 신호)
     label_indent: int = 0             # alignment.indent + 선행공백 환산 레벨(계층)
     cell_red: bool = False            # 데이터 셀 빨강폰트(색 음수 신호)
+    number_format: str = "General"    # 데이터 셀 표시서식(text-as-num/mixed 탐지용)
 
 
 def unpivot_block(block_cells: list[Cell], b: Block, *,
@@ -295,9 +296,40 @@ def unpivot_block(block_cells: list[Cell], b: Block, *,
                         in ("FF0000", "C00000"))
         out.append(LongRow(value=d.value, attrs=attrs, row=d.row, col=d.col,
                            level=level, label_bold=label_bold,
-                           label_indent=label_indent, cell_red=cell_red))
+                           label_indent=label_indent, cell_red=cell_red,
+                           number_format=d.fmt.number_format))
     return out
 
 
-__all__ = ["unmerge_fill", "classify_cells", "nearest_header",
+def no_header_suspect(block_cells: list[Cell], b: Block, top_rows: int) -> bool:
+    """no-header 의심(smell 신호용 — 격하/정제변경 안 함, 오탐 회피).
+
+    MetaCollector GuessHeaderRange 흡수: 헤더 후보 마지막 행과 첫 데이터행의 열별
+    data_type 이 ≥50% 일치하고, 헤더 후보행에 숫자/날짜가 섞이면(헤더답지 않음) True.
+    가드: 헤더행이 전부 텍스트면(정상 헤더) False → 정상 표 오탐 차단.
+    """
+    if top_rows < 1 or top_rows >= b.n_rows:
+        return False
+    hdr_r = b.min_row + top_rows - 1
+    dat_r = b.min_row + top_rows
+    pos: dict[tuple[int, int], str] = {}
+    for c in block_cells:
+        if c.row in (hdr_r, dat_r) and not c.is_blank:
+            pos[(c.row, c.col)] = c.data_type
+    cols = sorted({col for (_r, col) in pos})
+    if not cols:
+        return False
+    match = 0
+    hdr_has_value = False
+    for col in cols:
+        ht = pos.get((hdr_r, col))
+        dt = pos.get((dat_r, col))
+        if ht in (T_NUMERIC, T_DATE):
+            hdr_has_value = True
+        if ht is not None and ht == dt:
+            match += 1
+    return hdr_has_value and (match / len(cols)) >= 0.5
+
+
+__all__ = ["unmerge_fill", "classify_cells", "nearest_header", "no_header_suspect",
            "unpivot_block", "LongRow", "fill_down_ditto"]

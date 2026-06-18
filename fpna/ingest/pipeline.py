@@ -33,7 +33,7 @@ from .detect import (detect_blocks, cells_in_block, strip_title_rows,
                      strip_footnote_rows, strip_repeated_header_rows,
                      label_is_subtotal, subtotal_signal_score, Block, UNIT_RE)
 from .headers import (unpivot_block, unmerge_fill, LongRow,
-                      classify_cells, fill_down_ditto)
+                      classify_cells, fill_down_ditto, no_header_suspect)
 from .normalize import (normalize_value_ex, parse_unit_label, infer_column_type,
                         scale_for_unit, strip_footnote_marker)
 from .validate import TidyRow, validate_rows, scan_formula_smells, Smell
@@ -82,6 +82,9 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
     out: list[TidyRow] = []
     # 열별 셀-스케일 집계(혼재 탐지용). key = (entity? no) → metric+col 식별 위해 src_col 사용.
     col_cell_scales: dict[int, set] = {}
+    # MetaCollector 흡수: 열별 표시서식 집계 → text-as-num(@서식+숫자) / mixed-format 탐지
+    col_number_formats: dict[int, set] = {}
+    col_text_as_num: dict[int, int] = {}
 
     for lr in longs:
         col_vals = [(k, v) for k, v in lr.attrs.items() if k.startswith("hdr_c")]
@@ -143,6 +146,12 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
                 scale_source = "block"
             col_cell_scales.setdefault(lr.col, set()).add(cell_scale)
 
+        # MetaCollector 흡수: 열별 표시서식 집계(에러셀은 위에서 continue 됨)
+        _nf = lr.number_format or "General"
+        col_number_formats.setdefault(lr.col, set()).add(_nf)
+        if _nf == "@" and is_num:        # 텍스트서식인데 숫자 내용 → SUM 누락 위험
+            col_text_as_num[lr.col] = col_text_as_num.get(lr.col, 0) + 1
+
         raw_value = None
         value = None if sentinel is not None else num
         if is_num and scale > 1:
@@ -185,6 +194,17 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             smells.append(Smell(
                 "C%d" % col, "SCALE_HETEROGENEOUS",
                 "한 열에 셀 스케일 혼재: %s" % sorted(scs)))
+
+    # MetaCollector 흡수: text-as-num(@서식+숫자) — Excel SUM 에서 무음 누락되는 사고
+    for col, cnt in sorted(col_text_as_num.items()):
+        smells.append(Smell("C%d" % col, "TEXT_AS_NUM_SUSPECT",
+            "텍스트서식(@) 셀에 숫자 내용 %d개 — Excel SUM 누락 위험" % cnt))
+    # mixed number_format(General/@ 제외 2종+) — 복붙 오염 지문
+    for col, fmts in sorted(col_number_formats.items()):
+        distinct = sorted({f for f in fmts if f and f not in ("General", "@")})
+        if len(distinct) >= 2:
+            smells.append(Smell("C%d" % col, "MIXED_NUMBER_FORMAT",
+                "한 열에 표시서식 %d종 혼재: %s" % (len(distinct), ", ".join(distinct[:4]))))
 
     _apply_subtotal_and_hierarchy(out, smells)
     return out
@@ -387,6 +407,14 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
             filled = fill_down_ditto(bc, ditto_cols, (b2.min_row, b2.max_row))
 
             block_smells: list = []
+
+            # ② no-header 의심(MetaCollector GuessHeaderRange 흡수): 헤더행이 데이터와
+            #    타입 유사 + 숫자 포함 → 헤더 없는 표일 수 있어 첫 행이 헤더로 먹힐 위험.
+            #    오탐 위험이 있어 격하(정제변경)는 안 하고 경고만 — 사용자가 판단.
+            if no_header_suspect(bc, b2, _top):
+                block_smells.append(Smell(
+                    "R%dC%d" % (b2.min_row, b2.min_col), "NO_HEADER_SUSPECT",
+                    "헤더행이 데이터와 타입 유사+숫자 포함 — 헤더 없는 표 의심(첫 행 손실 가능)"))
 
             # G8 반복헤더: 페이지브레이크로 재삽입된 헤더행(첫 헤더와 동일) 제거.
             header_rows = list(range(b2.min_row, b2.min_row + max(_top, 1)))
