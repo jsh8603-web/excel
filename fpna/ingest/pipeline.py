@@ -509,6 +509,19 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
 
     kept, rep = validate_rows(all_tidy, numeric_metric=False)
 
+    # 조용한 대량 손실 방어: 블록은 잡혔는데 대부분 reject(또는 kept 0)면 표면화한다.
+    # MM23 류 대형 시계열 DB(헤더가 수백행 위·c1 라벨 분리·수천 열)는 누더기 표 가정
+    # 밖이라 metric 결측 → 전부 reject 되는데, 조용히 버리면 무음 손실이 된다.
+    _attempted = len(kept) + rep.n_rejected
+    if n_blocks > 0 and _attempted >= 50 and len(kept) < _attempted * 0.2:
+        all_smells.append({
+            "sheet": "-", "cell": "-", "kind": "HIGH_REJECT_RATE",
+            "detail": ("블록 %d개에서 %d행 시도 중 %d행만 통과(%.0f%% reject) — 헤더가 "
+                       "데이터에서 멀거나 라벨열 분리된 대형 시계열 DB(MM23 등) 의심. "
+                       "정형 마트면 profile 을, 누더기 표면 --sheet 로 범위를 좁혀 재시도."
+                       % (n_blocks, _attempted, len(kept),
+                          100 * (1 - len(kept) / max(_attempted, 1))))})
+
     # 컬럼 타입 추론(스키마 문서화용)
     schema = {
         "columns": {
