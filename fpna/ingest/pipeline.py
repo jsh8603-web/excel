@@ -39,7 +39,8 @@ from .normalize import (normalize_value_ex, parse_unit_label, infer_column_type,
 from .validate import TidyRow, validate_rows, scan_formula_smells, Smell
 from .reconcile import groundtruth_cells, reconcile_sheet, recon_to_smells
 
-_PERIOD_RE = re.compile(r"(\d{4}\s*[-/.년]?\s*(\d{1,2})?\s*(월|분기|Q|H)?|\dQ|[1-4]분기|상반기|하반기)",
+_PERIOD_RE = re.compile(r"(\d{4}\s*[-/.년]?\s*(\d{1,2})?\s*(월|분기|Q|H)?|\dQ|[1-4]분기|상반기|하반기"
+                        r"|[1-4]\s*/\s*4)",   # 'N/4' = N분기(연도 생략 표기, 한국 통계 흔함)
                         re.IGNORECASE)
 
 
