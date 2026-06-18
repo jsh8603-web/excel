@@ -312,6 +312,43 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(scale, 1)
 
 
+    def test_g9_text_as_num_and_mixed_format(self):
+        """G9(MetaCollector 흡수): @서식 숫자 → TEXT_AS_NUM_SUSPECT, 열 서식 2종 → MIXED."""
+        def build(ws):
+            ws["A1"], ws["B1"], ws["C1"] = "계정", "2024", "2025"
+            ws["A2"], ws["B2"], ws["C2"] = "매출", 1000, "1200"
+            ws["A3"], ws["B3"], ws["C3"] = "비용", 600, "700"
+            ws["C2"].number_format = "@"; ws["C3"].number_format = "@"     # C열: 텍스트서식+숫자
+            ws["B2"].number_format = "#,##0"; ws["B3"].number_format = "0.00"  # B열: 서식 2종
+        res = self._ingest_wb(build)
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("TEXT_AS_NUM_SUSPECT", kinds)
+        self.assertIn("MIXED_NUMBER_FORMAT", kinds)
+
+    def test_g10_no_header_suspect(self):
+        """G10(MetaCollector 흡수): 텍스트 우세 첫 행이 헤더로 먹히나 실은 데이터 → 경고."""
+        def build(ws):
+            # 첫 행도 데이터(지역/구/값)인데 텍스트 우세라 헤더밴드로 잡힘 → 첫 행 손실 위험.
+            ws["A1"], ws["B1"], ws["C1"] = "서울", "강남", 100
+            ws["A2"], ws["B2"], ws["C2"] = "부산", "해운대", 200
+            ws["A3"], ws["B3"], ws["C3"] = "대구", "수성", 300
+        res = self._ingest_wb(build)
+        kinds = {s["kind"] for s in res.smells}
+        self.assertIn("NO_HEADER_SUSPECT", kinds)
+
+    def test_g11_integer_year_header(self):
+        """G11: 정수형 연도 헤더(2024)도 문자열처럼 헤더로 보호 → period 정상 복원."""
+        def build(ws):
+            ws["A1"] = "(단위: 백만원)"
+            ws["A2"], ws["B2"], ws["C2"] = "계정", 2024, 2025          # 정수 연도 헤더
+            ws["A3"], ws["B3"], ws["C3"] = "매출", 1000, 1200
+            ws["A4"], ws["B4"], ws["C4"] = "비용", 600, 700
+        res = self._ingest_wb(build)
+        rows = {(r.entity, r.period): r for r in res.tidy_rows}
+        self.assertIn(("매출", "2024"), rows)        # 연도가 데이터로 둔갑 안 하고 period 복원
+        self.assertEqual(rows[("매출", "2024")].value, 1000 * 1_000_000)
+
+
 class TestDispatch(unittest.TestCase):
     def test_keyword_routing(self):
         self.assertEqual(dispatch("NPV IRR 투자 타당성").template, "investment_appraisal")

@@ -82,13 +82,24 @@ def _value_like(c: Cell) -> bool:
     """
     if c.is_blank:
         return False
+    if c.data_type == T_NUMERIC:
+        # 4자리 연도 정수(1900~2100)는 헤더일 가능성 → 모호하므로 헤더 취급.
+        # 문자열 '2024' 의 bare-4자리 보호(아래)와 동일. 정수 연도 헤더가 데이터로
+        # 오인돼 언피벗이 붕괴하는 결함 방지. 금액(예 5000)과 충돌 않게 연도 범위 한정.
+        v = c.value
+        if isinstance(v, int) and not isinstance(v, bool) and 1900 <= v <= 2100:
+            return False
+        return True
     # 오류값(#DIV/0! 등)도 데이터 슬롯을 차지 → 열을 데이터 열로 유지(보존 위해).
-    if c.data_type in (T_NUMERIC, T_DATE, T_ERROR):
+    if c.data_type in (T_DATE, T_ERROR):
         return True
     if c.data_type == T_CHARACTER:
         s = str(c.value).strip()
         if UNIT_RE.search(s):              # '(단위: ...)' 안내문 = 비값
             return False
+        # @(텍스트)서식 + 숫자 내용 = text-as-num 데이터(Excel SUM 누락 지점). 값으로 인식.
+        if c.fmt.number_format == "@" and _re.fullmatch(r"-?\d[\d,]*\.?\d*", s):
+            return True
         if _re.fullmatch(r"\d{1,4}", s):   # bare 정수(연도 포함) = 비값
             return False
         if _MARKER_RE.search(s):
