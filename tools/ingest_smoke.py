@@ -71,15 +71,19 @@ def main(argv=None):
               % (100 * sum(accs) / len(accs), 100 * min(accs),
                  sum(1 for a in accs if a >= 0.999)))
     # 문제 케이스(크래시 또는 정확도 < 100%) 상위 노출
-    bad = sorted((r for r in rows if r["status"] == "CRASH" or r.get("acc", 1.0) < 1.0),
+    # tidy 0(silent fail) 도 문제 케이스 — oracle 없는 실데이터에서 조용한 빈 결과 표면화.
+    bad = sorted((r for r in rows if r["status"] == "CRASH"
+                  or r.get("acc", 1.0) < 1.0 or r.get("rows") == 0),
                  key=lambda r: r.get("acc", 0.0))
     if bad:
-        print("--- 문제 케이스 ---")
+        print("--- 문제 케이스 (크래시 / 정확도<100% / tidy 0) ---")
         for r in bad[:15]:
-            print("  %-22s %-6s oracle=%-7s %s"
-                  % (r["file"], r["status"], r.get("oracle", "-"), r.get("err", "")))
+            tidy0 = "  ⚠TIDY0-SILENT-FAIL" if r.get("rows") == 0 and r["status"] == "OK" else ""
+            print("  %-26s %-6s rows=%-6s oracle=%-7s %s%s"
+                  % (r["file"], r["status"], r.get("rows", "-"),
+                     r.get("oracle", "-"), r.get("err", ""), tidy0))
     else:
-        print("문제 케이스 없음(크래시 0, 정확도 100%).")
+        print("문제 케이스 없음(크래시 0, tidy 생성, 정확도 100%).")
     return 1 if crashes else 0
 
 
