@@ -43,6 +43,13 @@ _PERIOD_RE = re.compile(r"(\d{4}\s*[-/.년]?\s*(\d{1,2})?\s*(월|분기|Q|H)?|\d
                         r"|[1-4]\s*/\s*4)",   # 'N/4' = N분기(연도 생략 표기, 한국 통계 흔함)
                         re.IGNORECASE)
 
+# 비데이터(표지/목차/주석) 시트 관례명 — 정확 일치만 스킵(부분일치·데이터표명 오격리 방지).
+_META_SHEET_RE = re.compile(
+    r"^(introduction|intro|contents?|table of contents|toc|notes?|information|info"
+    r"|correction[s]?|cover|about|index|metadata|meta|foreword|preface|readme|legend"
+    r"|definitions?|glossary|sources?|목차|안내|일러두기|표지|개요|유의사항|주석|설명|범례|용어)$",
+    re.IGNORECASE)
+
 
 @dataclass
 class IngestResult:
@@ -365,6 +372,13 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
 
     recon_reports: list = []
     for sn in sheets:
+        # 비데이터(표지/목차/주석) 시트는 데이터로 오인되면 가짜 행을 만든다(ONS
+        # Introduction·GVA Contents/Notes). 시트명이 메타 관례명과 정확히 일치하면
+        # 스킵 + smell 노출. ⚠ --sheet 명시 시엔 사용자 의도라 스킵 안 함.
+        if sheet is None and _META_SHEET_RE.match(sn.strip()):
+            all_smells.append({"sheet": sn, "cell": "-", "kind": "NON_DATA_SHEET_SKIPPED",
+                               "detail": "표지/목차/주석류 시트로 판단해 스킵(--sheet 로 강제 가능)"})
+            continue
         ws_f = wb_f[sn]
         ws_v = wb_v[sn]
         cells = as_cells(ws_f, ws_v)
