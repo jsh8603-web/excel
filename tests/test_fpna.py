@@ -394,6 +394,46 @@ class TestIngest(unittest.TestCase):
         self.assertIn(100, vals)
         self.assertIn(63, vals)                            # 'rate (%)' 헤더 아래 값 보존
 
+    def test_g14_multi_segment_header_propagation(self):
+        """G14: 단일 헤더밴드 + 빈행으로 나뉜 N개 시계열 구간 + @텍스트 정수연도 라벨.
+
+        실데이터(통계청 고용동향) 회귀:
+        ① absorb max_gap=4: 헤더와 데이터 사이 빈행 3~4칸을 건너 밴드 흡수,
+        ② 다구간 헤더 전파: 빈행으로 분리된 2번째 구간이 1번째 구간의 밴드를 공유
+           (없으면 metric None), ③ @텍스트서식 정수연도(c1='2019')는 데이터 아닌
+           기간라벨 → period 승격(없으면 데이터열로 오인돼 entity/period None)."""
+        from openpyxl.styles import numbers
+
+        def build(ws):
+            ws["A1"] = "산업별 취업자"                       # 제목
+            ws["B2"], ws["C2"], ws["D2"] = "전체", "농림", "광공업"   # 멀티헤더(계층)
+            ws["B3"], ws["C3"], ws["D3"] = "취업자", "어업", "제조업"
+            # A4~A6 빈행 3칸(헤더-데이터 gap) — A 라벨 + B~D 값 연속(c1 분리 방지)
+            seg1 = [("2019", 100, 200, 300), ("2020", 110, 210, 310),
+                    ("2021", 115, 215, 315)]                # 구간1(연간, 3행 ≥ MIN_ROWS)
+            r = 7
+            for yr, a, b, c in seg1:
+                cell = ws.cell(r, 1, yr); cell.number_format = numbers.FORMAT_TEXT  # @ 정수연도
+                ws.cell(r, 2, a); ws.cell(r, 3, b); ws.cell(r, 4, c)
+                r += 1
+            r += 1                                          # 빈행(구간 분리)
+            seg2 = [("2022.1/4", 120, 220, 320), ("2/4", 130, 230, 330),
+                    ("3/4", 140, 240, 340)]                 # 구간2(분기, 3행) — 전파 대상
+            for pd, a, b, c in seg2:
+                ws.cell(r, 1, pd); ws.cell(r, 2, a); ws.cell(r, 3, b); ws.cell(r, 4, c)
+                r += 1
+        res = self._ingest_wb(build)
+        data = [r for r in res.tidy_rows if r.row_role == "data"]
+        self.assertTrue(data)
+        # ③ @텍스트 정수연도가 데이터 아닌 period 로
+        self.assertIn("2019", {str(r.period) for r in data})
+        # ② 구간2(전파) 도 metric 을 가진다 — 100·120 둘 다 '전체>취업자' 계열
+        seg2_rows = [r for r in data if str(r.period) == "2022.1/4"]
+        self.assertTrue(seg2_rows, "구간2 가 period 로 안 잡힘")
+        self.assertTrue(any(r.metric for r in seg2_rows), "구간2 metric None — 헤더 전파 실패")
+        # value 보존
+        self.assertIn(120, [r.value for r in seg2_rows])
+
 
 class TestDispatch(unittest.TestCase):
     def test_keyword_routing(self):

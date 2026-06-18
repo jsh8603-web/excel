@@ -104,7 +104,7 @@ def detect_blocks(cells: list[Cell], *, gap: int = GAP_TOL,
 
 
 def absorb_header_bands(cells: list[Cell], blocks: list[Block], *,
-                        max_gap: int = 1, max_absorb: int = 6) -> list[Block]:
+                        max_gap: int = 4, max_absorb: int = 6) -> list[Block]:
     """데이터블록 위쪽에 빈행 gap 으로 떨어진 헤더밴드를 블록에 흡수(min_row 확장).
 
     동기(ONS류 실데이터): 다층 메타(제목/발행일/지역) + 멀티헤더(지표/단위/코드) +
@@ -141,8 +141,9 @@ def absorb_header_bands(cells: list[Cell], blocks: list[Block], *,
         if idx in removed:
             continue
         # 헤더밴드 정렬 폭 하한. 하한 3 → 좁은 표에서 'A2:라벨 / B2:값' 2칸 메타행
-        # (발행일·연락처)이 폭 절반을 넘겨 흡수되는 것을 막는다(ONS 류 폭 큰 표는 //2).
-        half = max(3, b.n_cols // 2)
+        # (발행일·연락처) 배제. //3 = 계층병합 밴드(통계청 산업분류: 행마다 채움 듬성)도
+        # 흡수하되 1~2칸 메타는 여전히 배제(ONS 19칸·g13 발행일 2칸 모두 정합).
+        half = max(3, b.n_cols // 3)
         gap = 0
         rr = b.min_row - 1
         new_min = b.min_row

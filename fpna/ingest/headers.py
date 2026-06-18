@@ -105,6 +105,9 @@ def _value_like(c: Cell) -> bool:
             return False
         # @(텍스트)서식 + 숫자 내용 = text-as-num 데이터(Excel SUM 누락 지점). 값으로 인식.
         if c.fmt.number_format == "@" and _re.fullmatch(r"-?\d[\d,]*\.?\d*", s):
+            # 단 정확히 연도범위 4자리(@서식)는 값이 아닌 기간라벨(통계청 c1='2019')로 본다.
+            if _re.fullmatch(r"\d{4}", s) and 1900 <= int(s) <= 2100:
+                return False
             return True
         if _re.fullmatch(r"\d{1,4}", s):   # bare 정수(연도 포함) = 비값
             return False

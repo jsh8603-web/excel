@@ -390,6 +390,11 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
         # 헤더밴드(텍스트 위주 → density 미달로 블록 미형성)가 빈행으로 데이터블록과
         # 분리된 경우(ONS류) 흡수 — 데이터블록 헤더 0 → tidy 0 무음실패 방지.
         blocks = absorb_header_bands(cells, blocks)
+        # 다구간 헤더 전파 상태(통계청류: 단일 밴드 + 빈행으로 나뉜 N개 시계열 구간).
+        # 헤더 없는 후속 블록에 직전 같은 열구조 밴드 cells 를 공유한다.
+        last_hdr_cells = None      # 직전 밴드 cells(좌표 보존 → nearest 매칭)
+        last_hdr_cols = None       # (min_col, max_col)
+        last_hdr_top = None        # 밴드 시작 행
         for bi, b in enumerate(blocks):
             n_blocks += 1
             bc = cells_in_block(cells, b)
@@ -411,6 +416,25 @@ def ingest_workbook(path: str, *, sheet: str | None = None) -> IngestResult:
             #    classify 로 좌헤더 폭 산출 → 그 열들만 단방향 fill.
             unmerge_fill(bc)
             _top, left_cols = classify_cells(bc, b2)
+
+            # 다구간 헤더 전파: 이 블록에 헤더밴드가 없고(_top==0) 직전 블록 밴드와
+            # 열범위가 겹치면, 직전 밴드 cells 를 합쳐(좌표 보존) 재분류한다. 통계청류
+            # '단일 밴드 + 빈행 분리 N구간'에서 2번째 구간 이후의 metric None 을 해소.
+            if (_top == 0 and last_hdr_cells is not None
+                    and last_hdr_cols[0] <= b2.max_col and b2.min_col <= last_hdr_cols[1]):
+                bc = last_hdr_cells + bc
+                b2 = Block(last_hdr_top, b2.max_row,
+                           min(b2.min_col, last_hdr_cols[0]),
+                           max(b2.max_col, last_hdr_cols[1]))
+                unmerge_fill(bc)
+                _top, left_cols = classify_cells(bc, b2)
+            elif _top > 0:
+                # 이 블록이 자체 밴드 보유 → 후속 헤더없는 블록 전파용으로 저장.
+                _hr = set(range(b2.min_row, b2.min_row + _top))
+                last_hdr_cells = [c for c in bc if c.row in _hr]
+                last_hdr_cols = (b2.min_col, b2.max_col)
+                last_hdr_top = b2.min_row
+
             ditto_cols = list(range(b2.min_col, b2.min_col + left_cols))
             filled = fill_down_ditto(bc, ditto_cols, (b2.min_row, b2.max_row))
 
