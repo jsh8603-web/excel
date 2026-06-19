@@ -46,40 +46,85 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-# --------------------------------------------------------------------------
-# 1. 색 팔레트 (무채색 + 단일 액센트)
-# --------------------------------------------------------------------------
-# ARGB hex (앞 2자리 alpha 생략 시 openpyxl 이 FF 보정)
-INK = "1A1A1A"          # 본문 검정(약간 누그러뜨린)
-INK_SOFT = "595959"     # 보조 텍스트 회색
-RULE = "BFBFBF"         # 가는 구분선 회색
-RULE_STRONG = "808080"  # 합계 보더 진회색
-BAND = "F2F2F2"         # 줄무늬/헤더 배경 옅은 회색
-HEADER_BG = "404040"    # 헤더 진회색 배경
-HEADER_FG = "FFFFFF"    # 헤더 흰 글씨
+# ==========================================================================
+# [핵심 디자인 코드 ①] 디자인 토큰 — 테마(팔레트) + 타이포(타이틀≠본문)
+# ==========================================================================
+# 빅4/컨설팅 산출물의 룩을 "토큰"으로 박는다. 색·폰트를 템플릿이 직접 쓰지 않고
+# 이 토큰만 쓰므로, apply_theme() 한 줄로 29개 템플릿이 동시에 재스킨된다.
+#
+# 레퍼런스(브랜드 가이드/관례, 색값만 차용):
+#   - Deloitte: green #86BC24 + black (brandpalettes/colorcodeshub).
+#   - 타이포 관례(McKinsey/KPMG): "타이틀 폰트 ≠ 본문 폰트". 본문은 거의 항상
+#     Arial/Calibri 계열. EY Interstate 처럼 사내 전용폰트는 클라이언트 PC 에
+#     없어 깨진다(=우리 폐쇄망 제약과 동일) → 확정 보유 폰트만 쓴다.
+#   - 회사 PC 확정 보유: "맑은 고딕"(한글) · "Calibri"/"Calibri Light"(라틴, Office 기본).
+#
+# 규칙:
+#   - 타이틀 = 영문 + Calibri Light(가벼운 헤드라인). 본문 = Calibri/맑은 고딕 10pt.
+#   - 무채색 본문 + 단일 브랜드 액센트 1색. 액센트는 '구분/강조'에만(남발 금지).
+#   - 헤더는 진한 솔리드밴드 대신 '옅은밴드 + 액센트 하단룰'(현대 회계법인 표 룩).
+
+# ---- 테마 정의(팔레트). 색은 ARGB hex(앞 2자리 alpha 생략 시 openpyxl FF 보정) ----
+THEMES: dict[str, dict] = {
+    # 기본: 차분한 무채색 + 딥틸 액센트. 어느 회사든 무난한 '컨설팅 뉴트럴'.
+    "graphite": {
+        "INK": "111418", "INK_SOFT": "5B616B",
+        "ACCENT": "12404A", "ACCENT_SOFT": "BBD3D6", "ACCENT_DEEP": "0B2A31",
+        "EYEBROW_FG": "12404A", "MARK": "12404A",
+        "HEADER_BAND": "EEF2F3", "HEADER_FG": "111418",
+        "BAND": "F6F8F8",
+        "POS_FG": "1F7A1F", "NEG_FG": "C0392B",
+        "INPUT_FG": "0B66C2", "LINK_FG": "1F7A1F",
+        "TITLE_FONT": "Calibri Light", "BODY_FONT": "맑은 고딕",
+        "BODY_FONT_LATIN": "Calibri",
+    },
+    # 딜로이트풍: Deloitte Green + 블랙. (사내/내부용. 외부배포 시 브랜드 충돌 주의)
+    "deloitte": {
+        "INK": "0F0B0B", "INK_SOFT": "53565A",
+        "ACCENT": "86BC24", "ACCENT_SOFT": "DCEBBD", "ACCENT_DEEP": "046A38",
+        "EYEBROW_FG": "046A38", "MARK": "86BC24",
+        "HEADER_BAND": "F1F1F1", "HEADER_FG": "0F0B0B",
+        "BAND": "F7F7F7",
+        "POS_FG": "046A38", "NEG_FG": "DA291C",
+        "INPUT_FG": "0076A8", "LINK_FG": "046A38",
+        "TITLE_FONT": "Calibri Light", "BODY_FONT": "맑은 고딕",
+        "BODY_FONT_LATIN": "Calibri",
+    },
+    # 네이비: 보수적 금융/IB 톤.
+    "navy": {
+        "INK": "0F1B2D", "INK_SOFT": "586071",
+        "ACCENT": "1F3A5F", "ACCENT_SOFT": "C3CFE0", "ACCENT_DEEP": "0C1F38",
+        "EYEBROW_FG": "1F3A5F", "MARK": "1F3A5F",
+        "HEADER_BAND": "EDF1F6", "HEADER_FG": "0F1B2D",
+        "BAND": "F5F8FB",
+        "POS_FG": "1F7A1F", "NEG_FG": "B3261E",
+        "INPUT_FG": "0B66C2", "LINK_FG": "1F7A1F",
+        "TITLE_FONT": "Calibri Light", "BODY_FONT": "맑은 고딕",
+        "BODY_FONT_LATIN": "Calibri",
+    },
+}
+DEFAULT_THEME = "graphite"
+
+# ---- 테마 비의존 중립 토큰(룰 회색은 어느 테마든 동일하게 차분) ----
 WHITE = "FFFFFF"
+RULE = "D8DCE0"          # 가는 구분선(hairline) 회색
+RULE_STRONG = "AAB0B7"   # 합계 보더 진회색
 
-ACCENT = "2E5A87"       # 단일 액센트(차분한 네이비블루)
-ACCENT_SOFT = "9DB7CE"  # 액센트 옅은 톤
-
-INPUT_FG = "0070C0"     # 입력셀 파랑(IB 관례)
-CALC_FG = INK           # 계산셀 검정
-LINK_FG = "008000"      # 시트간 링크 초록
-
-POS_FG = "1F7A1F"       # 양(개선) 초록
-NEG_FG = "C00000"       # 음(악화) 빨강
-
-# --------------------------------------------------------------------------
-# 2. 폰트 (회사 PC 확정 보유 폰트만)
-# --------------------------------------------------------------------------
-# 맑은 고딕 = 한국어 Windows 기본 탑재. Calibri = Office 기본. 둘 다 안전.
-FONT_NAME = "맑은 고딕"
-FONT_NAME_LATIN = "Calibri"
+# ---- 타이포 스케일(크기는 테마 무관 고정) ----
 SIZE_BODY = 10
 SIZE_SMALL = 9
-SIZE_TITLE = 16
-SIZE_SUBTITLE = 11
-SIZE_SECTION = 11
+SIZE_EYEBROW = 9         # eyebrow/kicker(대문자 영문, 트래킹)
+SIZE_TITLE = 20          # 영문 헤드라인(Calibri Light, 큼직하게)
+SIZE_SUBTITLE = 10.5     # 한글 부제
+SIZE_SECTION = 11        # 섹션 헤더
+
+# ---- 아래 토큰들은 apply_theme() 가 채운다(placeholder; import 시 1회 호출) ----
+INK = INK_SOFT = ACCENT = ACCENT_SOFT = ACCENT_DEEP = ""
+EYEBROW_FG = MARK = HEADER_BAND = HEADER_FG = HEADER_BG = BAND = ""
+POS_FG = NEG_FG = INPUT_FG = LINK_FG = CALC_FG = ""
+TITLE_FONT = BODY_FONT = FONT_NAME = FONT_NAME_LATIN = ""
+
+# 2. 폰트 placeholder 종료 — 실제 값은 파일 하단 apply_theme(DEFAULT_THEME) 에서 주입
 
 # --------------------------------------------------------------------------
 # 3. 숫자 서식 코드 (Excel 범용)
@@ -135,29 +180,74 @@ BORDER_BOTTOM = Border(bottom=_thin)
 
 
 # --------------------------------------------------------------------------
-# 6. Font 팩토리
+# 6. Font 팩토리 + apply_theme(테마 주입)
 # --------------------------------------------------------------------------
-def font(color: str = INK, *, bold: bool = False, size: int = SIZE_BODY,
-         italic: bool = False) -> Font:
-    return Font(name=FONT_NAME, size=size, bold=bold, italic=italic, color=color)
+def font(color: str | None = None, *, bold: bool = False, size: float = SIZE_BODY,
+         italic: bool = False, name: str | None = None) -> Font:
+    """본문 폰트(기본 BODY_FONT=맑은 고딕). 색 미지정 시 활성 테마 INK."""
+    return Font(name=name or BODY_FONT, size=size, bold=bold, italic=italic,
+                color=color or INK)
 
 
-F_BODY = font()
-F_BODY_BOLD = font(bold=True)
-F_INPUT = font(INPUT_FG)
-F_CALC = font(CALC_FG)
-F_LINK = font(LINK_FG)
-F_SOFT = font(INK_SOFT, size=SIZE_SMALL)
-F_TITLE = font(INK, bold=True, size=SIZE_TITLE)
-F_SUBTITLE = font(INK_SOFT, size=SIZE_SUBTITLE)
-F_SECTION = font(ACCENT, bold=True, size=SIZE_SECTION)
-F_HEADER = font(HEADER_FG, bold=True, size=SIZE_SMALL)
-F_TOTAL = font(INK, bold=True)
+def title_font(*, size: float = SIZE_TITLE, bold: bool = False,
+               color: str | None = None) -> Font:
+    """타이틀 폰트(TITLE_FONT=Calibri Light). 영문 헤드라인 전용."""
+    return Font(name=TITLE_FONT, size=size, bold=bold, color=color or INK)
 
-FILL_HEADER = PatternFill("solid", fgColor=HEADER_BG)
-FILL_BAND = PatternFill("solid", fgColor=BAND)
-FILL_ACCENT = PatternFill("solid", fgColor=ACCENT)
+
 FILL_NONE = PatternFill(fill_type=None)
+
+# 파생 폰트/필 placeholder — apply_theme 가 채운다.
+F_BODY = F_BODY_BOLD = F_INPUT = F_CALC = F_LINK = F_SOFT = None
+F_TITLE = F_SUBTITLE = F_SECTION = F_HEADER = F_TOTAL = F_EYEBROW = None
+FILL_HEADER = FILL_BAND = FILL_ACCENT = None
+
+_ACTIVE_THEME = None
+
+
+def apply_theme(name: str = DEFAULT_THEME) -> None:
+    """테마 토큰을 모듈 전역 + 파생 Font/Fill 에 주입한다.
+
+    템플릿은 hs.ACCENT / hs.F_TITLE / hs.FILL_HEADER 등만 쓰므로, 이 함수 한 번이면
+    29개 템플릿 룩이 동시에 바뀐다. import 시 1회 자동 호출(아래). 런타임에 다시
+    부르면(예: hs.apply_theme("deloitte")) 이후 빌드부터 적용된다.
+    """
+    global _ACTIVE_THEME
+    t = THEMES.get(name)
+    if t is None:
+        raise KeyError("unknown theme %r (있음: %s)" % (name, ", ".join(THEMES)))
+    g = globals()
+    # 팔레트/타이포 토큰 주입
+    for k, v in t.items():
+        g[k] = v
+    g["FONT_NAME"] = t["BODY_FONT"]            # 하위호환 별칭
+    g["FONT_NAME_LATIN"] = t["BODY_FONT_LATIN"]
+    g["CALC_FG"] = t["INK"]
+    g["HEADER_BG"] = t["HEADER_BAND"]          # 하위호환(과거 'BG' 명칭)
+    # 파생 Font (활성 토큰 기준 재생성)
+    g["F_BODY"] = font()
+    g["F_BODY_BOLD"] = font(bold=True)
+    g["F_INPUT"] = font(g["INPUT_FG"])
+    g["F_CALC"] = font(g["CALC_FG"])
+    g["F_LINK"] = font(g["LINK_FG"])
+    g["F_SOFT"] = font(g["INK_SOFT"], size=SIZE_SMALL)
+    g["F_TITLE"] = title_font(size=SIZE_TITLE)                       # 영문 헤드라인
+    g["F_SUBTITLE"] = font(g["INK_SOFT"], size=SIZE_SUBTITLE)        # 한글 부제
+    g["F_SECTION"] = font(g["ACCENT"], bold=True, size=SIZE_SECTION)
+    g["F_HEADER"] = font(g["HEADER_FG"], bold=True, size=SIZE_SMALL)
+    g["F_TOTAL"] = font(g["INK"], bold=True)
+    g["F_EYEBROW"] = font(g["EYEBROW_FG"], bold=True, size=SIZE_EYEBROW,
+                          name=t["BODY_FONT_LATIN"])
+    # 파생 Fill
+    g["FILL_HEADER"] = PatternFill("solid", fgColor=g["HEADER_BAND"])
+    g["FILL_BAND"] = PatternFill("solid", fgColor=g["BAND"])
+    g["FILL_ACCENT"] = PatternFill("solid", fgColor=g["ACCENT"])
+    _ACTIVE_THEME = name
+
+
+import os as _os
+apply_theme(_os.environ.get("FPNA_THEME", DEFAULT_THEME)
+            if _os.environ.get("FPNA_THEME") in THEMES else DEFAULT_THEME)
 
 
 # --------------------------------------------------------------------------
@@ -186,6 +276,8 @@ def set_cell(ws: Worksheet, row: int, col: int, value=None, *,
     if role == "header":
         cell.fill = FILL_HEADER
         cell.alignment = align or CENTER
+        # 현대 회계법인 표 헤더 = 옅은밴드 + 액센트 '하단룰'(진한 솔리드밴드 대신).
+        cell.border = Border(bottom=Side(style="medium", color=ACCENT))
     else:
         cell.alignment = align or (LEFT if role in ("label", "soft") else RIGHT)
     if fill is not None:
@@ -218,21 +310,94 @@ def set_widths(ws: Worksheet, widths: dict[int, float]) -> None:
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
+# ==========================================================================
+# [핵심 디자인 코드 ②] 타이틀 규칙 — brand_header
+# ==========================================================================
+# 빅4/컨설팅 표지 관례를 코드로 박은 타이틀 블록:
+#   ① eyebrow(kicker)  = 대문자 영문 워크스트림, 작게·트래킹·액센트색 (제목 위 1줄)
+#   ② headline         = 영문 타이틀(Calibri Light, 큼직). "타이틀은 영문" 규칙.
+#   ③ subtitle         = 한글 설명(보조 회색)
+#   ④ accent rule      = 제목 아래 액센트 가로룰(브랜드 시그니처) + 좌상단 짧은 마크룰
+# 영문 헤드라인은 (a) 명시 title_en (b) 제목의 "(English)" 괄호 추출 (c) 원제목 순.
+
+import re as _re
+
+# 영문 헤드라인이 없을 때 쓰는 기본 eyebrow.
+EYEBROW_DEFAULT = "FP&A REPORTING"
+
+_EN_PAREN = _re.compile(r"\(([A-Za-z0-9][A-Za-z0-9 &/\-\.\+]*)\)\s*$")
+
+
+def _resolve_headline(title: str, title_en: str | None) -> tuple[str, str | None]:
+    """(headline_en, subtitle_kr) 결정.
+
+    - title_en 명시 → 그걸 헤드라인, 원제목 전체를 부제로.
+    - 제목 끝 "(English)" 괄호 → 괄호 영문이 헤드라인, 괄호 제거한 한글이 부제.
+    - 둘 다 없으면 → 원제목이 헤드라인(부제 None).
+    """
+    if title_en:
+        return title_en, title
+    m = _EN_PAREN.search(title or "")
+    if m:
+        en = m.group(1).strip()
+        kr = (title[:m.start()]).strip(" -—·")
+        return en, (kr or None)
+    return title, None
+
+
+def _track(text: str, gap: str = "\u2009") -> str:
+    """eyebrow 트래킹(자간) — 글자 사이 thin space. 대문자 영문에만 권장."""
+    return gap.join(list(text))
+
+
+def brand_header(ws: Worksheet, title: str, subtitle: str = "", *,
+                 title_en: str | None = None, eyebrow: str | None = None,
+                 row: int = 1, last_col: int = 6) -> int:
+    """브랜드 타이틀 블록을 그리고 본문 시작 행을 반환한다(title_block 대체).
+
+    한글 제목을 넘겨도 괄호 영문을 헤드라인으로 끌어올리고, 한글은 부제로 내린다.
+    """
+    headline, kr_sub = _resolve_headline(title, title_en)
+    sub = subtitle or kr_sub or ""
+
+    # ① 좌상단 짧은 액센트 마크룰(A:B 상단 thick) — 브랜드 dot 의 절제된 변형
+    for col in (1, 2):
+        ws.cell(row=row, column=col).border = Border(
+            top=Side(style="thick", color=MARK))
+    # ① eyebrow
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=last_col)
+    ce = ws.cell(row=row, column=1, value=_track(eyebrow or EYEBROW_DEFAULT))
+    ce.font = F_EYEBROW
+    ce.alignment = LEFT
+    ws.row_dimensions[row].height = 16
+    r = row + 1
+    # ② 영문 헤드라인
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=last_col)
+    ch = ws.cell(row=r, column=1, value=headline)
+    ch.font = F_TITLE
+    ch.alignment = LEFT
+    ws.row_dimensions[r].height = 28
+    r += 1
+    # ③ 한글 부제
+    if sub:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=last_col)
+        cs = ws.cell(row=r, column=1, value=sub)
+        cs.font = F_SUBTITLE
+        cs.alignment = LEFT
+        r += 1
+    # ④ 제목 아래 액센트 가로룰(시그니처)
+    for col in range(1, last_col + 1):
+        ws.cell(row=r, column=col).border = Border(
+            bottom=Side(style="medium", color=ACCENT))
+    ws.row_dimensions[r].height = 4
+    r += 1
+    return r + 1  # 한 줄 띄움
+
+
 def title_block(ws: Worksheet, title: str, subtitle: str = "",
                 *, row: int = 1, last_col: int = 6) -> int:
-    """제목/부제 블록. 다음에 쓸 시작 행을 반환."""
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=last_col)
-    c = ws.cell(row=row, column=1, value=title)
-    c.font = F_TITLE
-    c.alignment = LEFT
-    r = row + 1
-    if subtitle:
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=last_col)
-        c2 = ws.cell(row=r, column=1, value=subtitle)
-        c2.font = F_SUBTITLE
-        c2.alignment = LEFT
-        r += 1
-    return r + 1  # 한 줄 띄움
+    """하위호환 shim — brand_header 로 위임(기존 호출부 무수정 재스킨)."""
+    return brand_header(ws, title, subtitle, row=row, last_col=last_col)
 
 
 def section_header(ws: Worksheet, row: int, text: str, last_col: int = 6) -> int:
@@ -602,3 +767,41 @@ def check_cell(ws: Worksheet, row: int, col: int, formula: str, *, tol: float = 
 
 
 __all__ = [name for name in dir() if not name.startswith("_")]
+
+
+# ==========================================================================
+# [핵심 디자인 코드 ③] 표 스타일 — style_table_block
+# ==========================================================================
+# 헤더/합계는 set_cell(role=...) 가 처리하므로, 여기선 '표 전체'에 일관된
+# 가독성 레이어(zebra 밴딩 · 외곽 hairline · 합계 상단 액센트룰)를 한 번에 입힌다.
+# 결정적(openpyxl 직접 fill — 조건부서식 roundtrip 손실 회피).
+def style_table_block(ws: Worksheet, *, header_row: int, first_row: int,
+                      last_row: int, left: int, right: int,
+                      zebra: bool = True, total_row: int | None = None) -> None:
+    """표 영역에 zebra 밴딩 + 헤더 하단 액센트룰 + (옵션)합계 상단 룰을 적용.
+
+    - header_row: 헤더행. 각 셀에 액센트 하단 medium 룰(set_cell 과 동일 톤) 재확인.
+    - first_row..last_row: 본문. zebra=True 면 짝수번째 데이터행에 옅은 BAND fill.
+    - total_row: 주면 그 행 상단에 액센트 medium 룰(합계 강조).
+    파스텔 밴딩은 '값 없는 셀'도 칠해 표 경계를 또렷하게 만든다(회계법인 표 관례).
+    """
+    accent_rule = Side(style="medium", color=ACCENT)
+    for col in range(left, right + 1):
+        ws.cell(row=header_row, column=col).border = Border(bottom=accent_rule)
+    if zebra:
+        band = PatternFill("solid", fgColor=BAND)
+        for i, r in enumerate(range(first_row, last_row + 1)):
+            if i % 2 == 1:                      # 짝수번째 데이터행만 밴딩
+                for col in range(left, right + 1):
+                    cell = ws.cell(row=r, column=col)
+                    if cell.fill is None or cell.fill.fgColor is None \
+                            or cell.fill.patternType is None:
+                        cell.fill = band
+    if total_row is not None:
+        for col in range(left, right + 1):
+            cur = ws.cell(row=total_row, column=col).border
+            ws.cell(row=total_row, column=col).border = Border(
+                top=accent_rule, bottom=(cur.bottom if cur else None))
+
+
+__all__ = [n for n in dir() if not n.startswith("_")]
