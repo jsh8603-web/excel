@@ -12,22 +12,6 @@ References (`SHEET!A1` or `SHEET!A1:B5`). A bare `A1` uses the top-level `sheet`
 > **examples** — substitute your workbook's actual sheet, ranges, and labels. The
 > checks are structural, not domain-specific.
 
-## Static vs formula basis (decide first)
-
-How the numbers get into cells decides which keys you **must** declare and how the recalc
-gate behaves (`backend-routing.md`):
-
-- **Static values** (computed in Python, written as plain numbers — no `=`): the file can't
-  prove a total by itself, so declare **`ties[].expected`** (an *independent* source total, true
-  N-version) and **value-mode `ratios`** (`{cell,num,den}`). `xlsx_doctor` re-derives and compares
-  fully **offline** — no recalculation needed.
-- **Formula-driven** (`=SUM(...)`, `=A-B` written then filled down): declare `ties` with `parts`
-  (the gate confirms the `SUM` covers them); the **recalc gate** (pywin32 → LibreOffice →
-  `formulas`) confirms the formulas evaluate without `#VALUE!`/`#DIV/0!`, and the **fill-down
-  linter** confirms each column's formulas share one relative-reference shape.
-
-A workbook may mix both; declare per cell accordingly.
-
 ## Top-level keys
 
 | key | type | enforces | repo perspective |
@@ -41,6 +25,8 @@ A workbook may mix both; declare per cell accordingly.
 | `fields` | object[] | numeric range obeys sign/min/max; cells ∈ accepted_values | metric_table FieldSpec, R13 sign |
 | `scenario` | object | Actual/Budget label sets are the same population | R9 scenario_aligned, R2 full population |
 | `expected_n` | object | non-empty rows in region == declared n | R7 no_silent_drop |
+| `units` | object[] | region values share one magnitude band (no scale mix) | unit/scale coherence (normalize) |
+| `periods` | object[] | header equals expected period ruler (no gap/dup/reorder) | R1 time_ruler |
 | `formula_refs` | object[] | each formula in region is `=<left><row><op><right><row>` | formula direction/column (wrong-column guard) |
 
 ## Field details
@@ -103,6 +89,20 @@ Each formula cell in the region must be exactly `=<left><row><op><right><row>`
 (`$` and spaces ignored). `left`/`right` accept a column letter or 1-based index.
 Catches wrong-column subtraction and flipped direction (e.g. `=B-C` where `=C-B`
 was intended) — the class that value re-derivation tautologies miss.
+
+
+### `units` — scale coherence (unit/scale axis)
+```json
+[{"region": "SUMMARY!F13:F31", "unit": "백만원"}]
+```
+Nonzero values in the region must share an order-of-magnitude band (≥1000× spread = scale mix, e.g. some cells in 원 and some in 천원) → FAIL. Opt-in.
+
+
+### `periods` — time-ruler integrity (R1)
+```json
+[{"header": "SUMMARY!B12:H12", "expected": ["APR","MAY","JUN","Q1","Q2","Q3","Q4","FY"]}]
+```
+Header cells must equal `expected` exactly (order included). Reports missing periods, duplicates, or reordering. Opt-in.
 
 ## Full example
 

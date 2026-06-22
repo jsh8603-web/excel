@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 
@@ -121,8 +122,11 @@ def unguarded_divisions(wb):
                 if not (isinstance(v, str) and v.startswith("=") and "/" in v):
                     continue
                 up = v.upper()
+                # 가드 인식: IFERROR/IFNA/ISNUMBER 또는 IF(...분모=0...) 래핑.
                 if "IFERROR" in up or "ISNUMBER" in up or "IFNA" in up:
                     continue
+                if up.startswith("=IF(") and ("=0" in up or "<>0" in up or ">0" in up):
+                    continue   # IF 로 분모 0 가드한 정상 비율
                 out.append("%s!%s=%s" % (ws.title, c.coordinate, v))
     return out
 
@@ -397,17 +401,193 @@ def check_contract(wb, contract):
                     out.append(("FAIL", "formula %s!%s 참조 불일치: 기대 %s ≠ %s"
                                 % (s, ws.cell(row=r, column=c).coordinate, want, v)))
 
+    # 8) 단위/스케일 정합(unit): 선언 region 의 nonzero 값이 같은 자릿수대인지(스케일 혼용 차단)
+    import math
+    for u in contract.get("units", []):
+        s, a = _split_ref(u["region"], default_sheet)
+        ws = by_sheet.get(s)
+        if not ws:
+            continue
+        mags = [math.floor(math.log10(abs(c.value))) for c in _cells_in(ws, a)
+                if _isnum(c.value) and c.value != 0]
+        if mags and (max(mags) - min(mags)) >= 3:
+            out.append(("FAIL", "unit %s: 스케일 혼용 의심(자릿수 %d~%d; %s 일관성 확인)"
+                        % (u["region"], min(mags), max(mags), u.get("unit", "?"))))
+
+    # 9) 시간축/기간 연속성(R1 time_ruler): 선언 header 범위가 기대 기간과 정확히 일치
+    for p in contract.get("periods", []):
+        s, a = _split_ref(p["header"], default_sheet)
+        ws = by_sheet.get(s)
+        if not ws:
+            continue
+        got = [c.value for c in _cells_in(ws, a)]
+        exp = p["expected"]
+        if got != exp:
+            # 무엇이 틀렸는지 구체화: 누락/중복/순서
+            missing = [x for x in exp if x not in got]
+            dup = [x for x in set(got) if got.count(x) > 1]
+            detail = []
+            if missing:
+                detail.append("누락 %s" % missing[:5])
+            if dup:
+                detail.append("중복 %s" % dup[:5])
+            if not detail:
+                detail.append("순서/값 불일치: 기대 %s ≠ %s" % (exp, got))
+            out.append(("FAIL", "periods %s: %s" % (p["header"], "; ".join(detail))))
+
     return out
 
 
 # --------------------------------------------------------------------------- #
-def doctor(path, fix=False, inplace=False, contract_path=None):
+_NUMTEXT_RE = re.compile(r"^\(?\s*[₩$€£¥]?\s*-?\d{1,3}(,\d{3})+(\.\d+)?\s*\)?%?$|^\(?\s*[₩$€£¥]\s*-?\d+(\.\d+)?\s*\)?$|^-?\d+(\.\d+)?%$")
+
+
+def numbers_as_text(wb):
+    """콤마/통화/괄호음수/% 형태의 '서식된 숫자가 텍스트로' 저장된 셀(SUM 무시 → 0).
+    bare '5000'/'2024' 는 id/연도일 수 있어 제외(고정밀)."""
+    out = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if isinstance(v, str) and _NUMTEXT_RE.match(v.strip()):
+                    out.append("%s!%s=%r" % (ws.title, c.coordinate, v))
+    return out
+
+
+def recalc_smell(path):
+    """수식 캐시 상태를 분리: none=계산 안 됨(생성직후 정상·재계산이면 채워짐),
+    zero=캐시가 0(xlsxwriter 기본/은폐 가능 — 더 의심). 반환 (none_list, zero_list)."""
+    try:
+        from openpyxl import load_workbook as _lw
+        wf = _lw(path); wd = _lw(path, data_only=True)
+    except Exception:
+        return [], []
+    none_cells, zero_cells = [], []
+    for ws in wf.worksheets:
+        wsd = wd[ws.title] if ws.title in wd.sheetnames else None
+        for row in ws.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and c.value.startswith("="):
+                    cached = wsd[c.coordinate].value if wsd is not None else None
+                    if cached is None:
+                        none_cells.append("%s!%s" % (ws.title, c.coordinate))
+                    elif cached == 0:
+                        zero_cells.append("%s!%s=%s" % (ws.title, c.coordinate, c.value))
+    return none_cells, zero_cells
+
+
+def source_numbers(src_path):
+    """소스(csv/xlsx)의 모든 숫자를 진실집합으로(원배율 + 천/백만 스케일 변형 포함)."""
+    vals = set()
+    def add(x):
+        if _isnum(x):
+            for s in (1, 1_000, 1_000_000, 0.001, 1e-6):
+                vals.add(round(float(x) * s, 2))
+    if src_path.lower().endswith((".csv", ".tsv")):
+        import csv
+        with open(src_path, encoding="utf-8-sig", newline="") as f:
+            for row in csv.reader(f, delimiter="\t" if src_path.endswith(".tsv") else ","):
+                for cell in row:
+                    try:
+                        add(float(str(cell).replace(",", "").replace("(", "-").replace(")", "")))
+                    except Exception:
+                        pass
+    else:
+        from openpyxl import load_workbook as _lw
+        wb = _lw(src_path, data_only=True)
+        for ws in wb.worksheets:
+            for r in ws.iter_rows(values_only=True):
+                for c in r:
+                    add(c)
+    return vals
+
+
+def provenance_untraced(wb, src_vals, declared=frozenset(), tol=0.01):
+    """워크북의 정적 숫자 중 소스 진실집합에 추적되지 않는 셀(=날조/오타 의심).
+    선언된 합계/비율(declared)·수식·0 은 파생이므로 제외."""
+    out = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if not _isnum(v) or v == 0:
+                    continue
+                ref = "%s!%s" % (ws.title, c.coordinate)
+                if ref in declared:
+                    continue
+                if round(v, 2) not in src_vals:
+                    out.append("%s=%s" % (ref, v))
+    return out
+
+
+def accessibility(wb):
+    """접근성/투명성 자문(보수적·저오탐): 데이터 병합·기본 시트명·숨김 시트 데이터.
+    치명 아님 — 공유 산출물 품질 신호."""
+    out = []
+    for ws in wb.worksheets:
+        # 기본 시트명
+        if re.match(r"^Sheet\d*$", ws.title or ""):
+            out.append("기본 시트명 '%s'(의미있는 이름 권장)" % ws.title)
+        # 숨김 시트에 데이터
+        if getattr(ws, "sheet_state", "visible") != "visible":
+            has_data = any(c.value is not None for row in ws.iter_rows() for c in row)
+            if has_data:
+                out.append("숨김 시트 '%s'에 데이터(투명성/감사 주의)" % ws.title)
+        # 숫자를 포함한 병합(스크린리더·합계 방해). 텍스트-only 제목 병합은 제외.
+        for mr in ws.merged_cells.ranges:
+            try:
+                vals = [ws.cell(row=r, column=c).value
+                        for r in range(mr.min_row, mr.max_row + 1)
+                        for c in range(mr.min_col, mr.max_col + 1)]
+            except Exception:
+                continue
+            if any(_isnum(v) for v in vals):
+                out.append("%s!%s 숫자 셀 병합(스크린리더/SUM 방해)" % (ws.title, str(mr)))
+    return out
+
+
+def _rel_form(formula, row):
+    """수식의 행참조를 자기행 기준 상대오프셋으로 정규화(=C5-B5 @r5 → =C[0]-B[0])."""
+    def repl(m):
+        col, r = m.group(1), int(m.group(2))
+        return "%s[%+d]" % (col, r - row)
+    return re.sub(r"\$?([A-Z]{1,3})\$?(\d+)", repl, formula.replace("$", "").replace(" ", "").upper())
+
+
+def formula_consistency(wb, min_run=3):
+    """한 열의 수식들이 동일한 상대형(fill-down)인지. 한 행만 형태가 다르면 파손 후보."""
+    from collections import Counter, defaultdict
+    out = []
+    for ws in wb.worksheets:
+        bycol = defaultdict(list)
+        for row in ws.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and c.value.startswith("=") and ":" not in c.value:
+                    bycol[c.column].append((c.row, c.coordinate, _rel_form(c.value, c.row)))
+        for col, items in bycol.items():
+            if len(items) < min_run:
+                continue
+            forms = Counter(f for _, _, f in items)
+            (top, n), = forms.most_common(1)
+            if n < min_run - 1:
+                continue  # 지배형 없음 → 의도적 혼합
+            for r, coord, f in items:
+                if f != top and forms[f] <= max(1, n // 3):
+                    out.append("%s!%s (열 다수형 ≠ 이 셀; fill-down 파손 의심)" % (ws.title, coord))
+    return out
+
+
+def doctor(path, fix=False, inplace=False, contract_path=None, do_recalc=False, source=None):
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         print("파일 없음:", path); return 2
     wb = load_workbook(path)
 
     err = scan_error_cells(wb)
+    numtext = numbers_as_text(wb)
+    fconsist = formula_consistency(wb)
+    a11y = accessibility(wb)
     stray = text_in_numeric_columns(wb)
     outliers = column_format_outliers(wb)
     unguarded = unguarded_divisions(wb)
@@ -425,7 +605,7 @@ def doctor(path, fix=False, inplace=False, contract_path=None):
         with open(contract_path, encoding="utf-8") as f:
             contract_obj = json.load(f)
         contract_findings = check_contract(wb, contract_obj)
-    coverage = contract_coverage(wb, contract_obj)
+    coverage = contract_coverage(wb, contract_obj) if contract_path else []
 
     print("=" * 60)
     print("XLSX DOCTOR:", os.path.basename(path))
@@ -472,11 +652,78 @@ def doctor(path, fix=False, inplace=False, contract_path=None):
             fatal = True
 
     print("\n[7] 계약 커버리지(미선언 합계/비율): %s  [자문성]" %
-          ("완전" if not coverage else "%d건" % len(coverage)))
+          ("해당없음(계약 미사용)" if not contract_path else
+           ("완전" if not coverage else "%d건" % len(coverage))))
     for _lvl, msg in coverage[:12]:
         print("    ⚠", msg)
     if coverage:
         print("    → 합계/비율은 ties/ratios 로 선언해야 값 검증이 걸린다(미선언=무검증).")
+
+    print("\n[8] 숫자-텍스트 저장(SUM 무시→0): %s" % ("없음" if not numtext else "%d건" % len(numtext)))
+    for x in numtext[:12]:
+        print("    ✗", x)
+    if numtext:
+        fatal = True
+        print("    → 콤마/통화/괄호음수가 텍스트로 저장됨. 숫자로 기입(서식은 number_format 으로).")
+
+    none_cells, zero_cells = recalc_smell(path)
+    print("\n[9] 재계산 상태: 미계산 %d · 캐시0 %d  [자문성]" % (len(none_cells), len(zero_cells)))
+    if none_cells:
+        print("    · 미계산 %d개(캐시 None) — 생성 직후 정상. Excel/--recalc 시 채워짐." % len(none_cells))
+    for x in zero_cells[:8]:
+        print("    ⚠ %s (캐시=0 — 소비자가 0으로 봄; 재계산/value= 확인)" % x)
+    if zero_cells:
+        print("    → 캐시 0 은 xlsxwriter value= 누락 등 — write_formula(..., value=) 또는 재계산.")
+
+    print("\n[11] 수식 fill-down 일관성: %s" % ("일관" if not fconsist else "%d건" % len(fconsist)))
+    for x in fconsist[:10]:
+        print("    ✗", x)
+    if fconsist:
+        fatal = True
+        print("    → 같은 열인데 한 행만 참조형이 다름(엉뚱한 칼럼/방향). 동일 상대수식으로 채울 것.")
+
+    print("\n[13] 접근성/투명성: %s  [자문성]" % ("양호" if not a11y else "%d건" % len(a11y)))
+    for x in a11y[:10]:
+        print("    ⚠", x)
+
+    if source:
+        try:
+            declared = set()
+            for t in contract_obj.get("ties", []):
+                ds = contract_obj.get("sheet") or wb.worksheets[0].title
+                s, a = _split_ref(t["total"], ds); declared.add("%s!%s" % (s, a))
+            for r0 in contract_obj.get("ratios", []):
+                ds = contract_obj.get("sheet") or wb.worksheets[0].title
+                ref = r0["cell"] if isinstance(r0, dict) else r0
+                s, a = _split_ref(ref, ds); declared.add("%s!%s" % (s, a))
+            sv = source_numbers(source)
+            untraced = provenance_untraced(wb, sv, declared)
+            print("\n[12] 출처추적(소스 대조): %s  [자문성]" %
+                  ("전부 추적됨" if not untraced else "%d건 미추적" % len(untraced)))
+            for x in untraced[:12]:
+                print("    ✗ %s (소스에 없음 — 날조/오타 의심)" % x)
+            if untraced:
+                fatal = True
+                print("    → --source 는 '모든 숫자가 추적돼야'의 선언. 파생이면 ties/ratios 로 선언해 제외.")
+        except Exception as e:
+            print("\n[12] 출처추적: 건너뜀(%s)" % e)
+
+    if do_recalc:
+        try:
+            import recalc as _rc
+            rr = _rc.recalc(path)
+            errs, stale = rr.get("errors", []), rr.get("stale", [])
+            print("\n[10] 실재계산(%s): 에러 %d · stale %d  %s" %
+                  (rr.get("engine"), len(errs), len(stale), rr.get("note", "")))
+            for c, code in errs[:10]:
+                print("    ✗ %s = %s (은폐된 진짜 에러)" % (c, code)); fatal = True
+            for c, old, new in stale[:10]:
+                print("    ✗ %s: 캐시=%r → 계산=%s (캐시값이 틀림 — 소비자가 본 값 ≠ 진짜)" % (c, old, new))
+                fatal = True
+            if rr.get("engine") == "formulas" and (errs or stale):
+                print("    (formulas 엔진은 일부 함수 시맨틱이 Excel 과 다름 — pywin32/LibreOffice 가 정확)")
+        except Exception as e:
+            print("\n[10] 실재계산: 건너뜀(%s)" % e)
 
     n_fixed = 0
     if fix and outliers:
@@ -504,8 +751,11 @@ def main(argv=None):
     ap.add_argument("--fix", action="store_true")
     ap.add_argument("--inplace", action="store_true")
     ap.add_argument("--contract", default=None, help="사이드카 계약 JSON 경로(기본: <파일>.contract.json 자동탐색)")
+    ap.add_argument("--recalc", action="store_true", help="헤드리스 재계산으로 은폐 에러·stale 캐시 검출(recalc.py 필요)")
+    ap.add_argument("--source", default=None, help="출처추적: 모든 숫자가 이 소스(csv/xlsx)로 추적되는지 대조")
     a = ap.parse_args(argv)
-    return doctor(a.path, fix=a.fix, inplace=a.inplace, contract_path=a.contract)
+    return doctor(a.path, fix=a.fix, inplace=a.inplace, contract_path=a.contract,
+                  do_recalc=a.recalc, source=a.source)
 
 
 if __name__ == "__main__":
