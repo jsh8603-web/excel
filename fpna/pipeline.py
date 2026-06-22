@@ -26,6 +26,7 @@ from openpyxl.workbook.workbook import Workbook
 
 from fpna.templates.base import QCReport, qc_no_formula_errors
 from fpna import view_contract as vc
+from fpna import layout_audit, formula_audit
 
 
 # 모듈 사적 mint 토큰 — receipt 위조 차단(외부에서 GatePass 직접 만들어도 token 불일치).
@@ -153,6 +154,14 @@ def _base_owned_gate(rep: QCReport, wb, data, template) -> bool:
                         "raw 독립계산 실패" if lhs is None else "reported_key 부재(보고 누락)")
             else:
                 vc.assert_tie_out(rep, lhs, rhs, tol=tol, name="T4 보존:%s" % name)
+    # 표현층 게이트(자문 2026-06): 캐논 밖 number_format 을 hard-fail("양식 불균형" 1차 방어).
+    layout_audit.assert_allowed_formats(rep, wb)
+    # 수식참조 계약: 템플릿이 _fpna_meta['formula_checks'] 를 선언하면 렌더된 수식이
+    # 의도한 칼럼/방향을 참조하는지 강제("엉뚱한 칼럼" 차단). 선언 없으면 no-op.
+    formula_audit.run_meta_checks(rep, wb, _meta(wb))
+    # 콘텐츠 타입 계약: 숫자영역에 텍스트(주석/헤더 누수) 차단 → #VALUE! 상류 차단.
+    # 템플릿이 _fpna_meta['numeric_regions'] / ['header_rows'] 선언 시 강제, 없으면 no-op.
+    layout_audit.assert_cell_content_types(rep, wb, _meta(wb))
     return rep.passed
 
 

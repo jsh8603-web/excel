@@ -171,6 +171,13 @@ def build(data: VarianceInput, *, mode: str = "create", base_path=None) -> openp
         "data_start": data_start, "data_end": data_end,
         "plan_col": plan_col, "act_col": act_col, "var_col": var_col,
         "items": data.items,
+        # 수식참조 계약(자문 2026-06): 렌더된 Δ 가 정확히 =실적-계획 인지 스파인이
+        # 검증. tautological qc_totals 가 못 잡던 "엉뚱한 칼럼/방향 뒤집힘" 차단.
+        "formula_checks": [{
+            "sheet": ws.title, "region": (data_start, data_end, var_col),
+            "op": "-", "left": act_col, "right": plan_col,
+            "name": "Δ 수식참조(=실적-계획)",
+        }],
     }
     return wb
 
