@@ -12,6 +12,22 @@ References (`SHEET!A1` or `SHEET!A1:B5`). A bare `A1` uses the top-level `sheet`
 > **examples** — substitute your workbook's actual sheet, ranges, and labels. The
 > checks are structural, not domain-specific.
 
+## Static vs formula basis (decide first)
+
+How the numbers get into cells decides which keys you **must** declare and how the recalc
+gate behaves (`backend-routing.md`):
+
+- **Static values** (computed in Python, written as plain numbers — no `=`): the file can't
+  prove a total by itself, so declare **`ties[].expected`** (an *independent* source total, true
+  N-version) and **value-mode `ratios`** (`{cell,num,den}`). `xlsx_doctor` re-derives and compares
+  fully **offline** — no recalculation needed.
+- **Formula-driven** (`=SUM(...)`, `=A-B` written then filled down): declare `ties` with `parts`
+  (the gate confirms the `SUM` covers them); the **recalc gate** (pywin32 → LibreOffice →
+  `formulas`) confirms the formulas evaluate without `#VALUE!`/`#DIV/0!`, and the **fill-down
+  linter** confirms each column's formulas share one relative-reference shape.
+
+A workbook may mix both; declare per cell accordingly.
+
 ## Top-level keys
 
 | key | type | enforces | repo perspective |

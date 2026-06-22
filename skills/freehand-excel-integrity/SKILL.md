@@ -41,6 +41,8 @@ description: >-
    ```
    Definition of done: **`[1]=0, [2]=0, [6] FAIL=0, [7] coverage complete`**, exit 0.
    `[3]` format → `python scripts/xlsx_doctor.py <file> --fix`. `[4]/[5]` advisory.
+   For the full protocol gate (and any xlwings/COM in-place mutation), close on
+   `python scripts/verify_workbook.py <file> [--before <snapshot>]` — see "No free-pass".
 5. If Excel + pywin32 is available, also open the file to force recalculation (the
    gate reads cells, not recomputed formulas). For static (code-written) values this
    is unnecessary — the gate verifies everything offline.
@@ -81,6 +83,99 @@ the invariants more strongly than freehand can. Use this skill for *ad-hoc / non
 workbooks, quick one-offs, or **repairing an external .xlsx** you were handed. (In the
 `jsh8603-web/excel` repo, that pipeline is the `fpna-excel` router → `run_report`; this
 skill covers what its 30 templates don't.)
+
+## Backend routing (signal-based, 3 write tools)
+
+Three write backends — **openpyxl / xlsxwriter / xlwings**. pywin32 **COM is not a
+standalone backend**; it's xlwings's escape hatch (`xlwings.api`) for Excel-only features.
+Pick by **signals, not percentages** — `route()` in `scripts/verify_workbook.py` is the
+decision function (`--route` prints it):
+
+| Signal | Backend |
+|---|---|
+| Editing an existing .xlsx, **open/live** on screen | **xlwings** |
+| Editing an existing .xlsx, closed | **openpyxl** |
+| New workbook, **bulk + chart** | **xlsxwriter** |
+| New workbook, otherwise | **openpyxl** |
+| **Pivot / slicer / Excel-only feature** (new or edit) | **xlwings** → escalates to `xlwings.api` (COM) as needed |
+
+**Static vs formula basis** — decide before authoring (drives the contract and the recalc gate):
+- **Static values** (numbers computed in code, injected) → contract **must** carry `ties[].expected`
+  (an *independent* source total) and **value-mode `ratios`** (`{cell,num,den}`). The gate verifies
+  fully offline — no recalculation needed.
+- **Formula-driven** (`=SUM(...)`, `=A-B` written then filled down) → the recalc gate checks them
+  (fallback chain below), and the fill-down linter checks per-column relative-reference consistency.
+
+**Environment removes a branch** (and `resolve()` says so out loud — never silent):
+no-install PC / Linux CI → xlwings unavailable → fall back to openpyxl (+ `tools/format-ooxml.py`
+for parts-preserving edits). Runtime code (`fpna/`, `main.py`) → openpyxl only (no pandas/COM).
+External-links/Power-Query workbook → plain openpyxl `save` drops parts → use `format-ooxml` or xlwings.
+
+Full decision table, per-backend **authoring basis + fallback**, and portability:
+`references/backend-routing.md`.
+
+### Three capabilities (open the skill → pick, don't free-pass)
+
+Loading this skill is not only "freehand authoring". In any branch you can reach three
+capabilities; pick by the input, then **always close with the gate**:
+
+1. **정제 (normalize)** — input is messy/누더기 (merged headers, units in cells, △/() negatives)?
+   Normalize to tidy **first**, then author. In `jsh8603-web/excel` that's `fpna.ingest`
+   (`py main.py ingest …` → tidy.csv). No ingest pipeline present → clean by hand following
+   the Shape & completeness rules (don't drop one-sided keys, calendar-driven time axis).
+2. **양식 (template)** — a standard/template exists for this report type? Use it:
+   `fpna.templates` + `run_report` (build + `qc()`), which guarantees the house look and tie-outs.
+   **No template → fall back to freehand + contract** (this skill).
+3. **프리핸드 (freehand)** — ad-hoc / one-off / repairing a handed-over file → author with
+   openpyxl per the Authoring Rules below + emit the sidecar contract.
+
+These compose: messy report with no template = 정제 → 프리핸드 → gate. The capability decides
+*what* you write; the backend table above decides *which tool* writes it.
+
+### No free-pass — entry is guaranteed, exit is gated
+
+Two things must hold, not one. **No free-pass blocks bad output; preflight guarantees the branch
+can even run.** The dispatcher does both:
+
+**(0) Preflight — at branch entry, before any work.** Reaching a branch must *guarantee its
+required tool actually exists* here. Check first, fail fast, route to the fallback if missing:
+
+```bash
+python scripts/verify_workbook.py x.xlsx --preflight --backend xlwings   # tools present? else fallback
+```
+
+If you route to xlwings/COM on a no-install PC (no Excel/pywin32), preflight FAILS at entry and
+names the fallback (openpyxl + `format-ooxml`) — instead of doing half the work and dying at save.
+Each backend declares required modules + the verification scripts it needs; preflight asserts all
+are present (`_BACKEND_REQS` in `verify_workbook.py`).
+
+Preflight also detects the **recalc engine** available (pywin32 / LibreOffice / `formulas`),
+which decides how gate check 3 runs.
+
+**(1-4) Protocol gate — at completion.** A workbook is **not done** until it passes:
+
+```bash
+python scripts/verify_workbook.py <file.xlsx>                              # new (static/formula)
+python scripts/verify_workbook.py <file.xlsx> --mode edit --before <orig>  # editing existing
+python scripts/verify_workbook.py <file.xlsx> --want pivot,chart           # routing + downgrade
+```
+
+The four checks:
+1. **Contract coverage** — `xlsx_doctor` green **and** `[7]` complete: every total/ratio is
+   declared in `ties`/`ratios` (advisory `[7]` is elevated to FAIL here — presence isn't enough).
+2. **Roundtrip (edit path only)** — editing an existing file requires `--before`; `roundtrip_gate`
+   proves no parts (external links / charts / pivots / Tables) were dropped. New creation is exempt.
+3. **Recalc fallback chain** (formula workbooks): pywin32 → `verify_xlsx`; else LibreOffice →
+   `soffice --headless`; else `formulas` package (coverage-limited, warns); static workbook → skip
+   (doctor verified it offline via `expected`/`num·den`).
+4. **Formula consistency linter** — `formula_lint` flags a column whose formulas don't share the
+   same relative-reference shape per row (fill-down breakage like `=A4-B2` among `=An-Bn`).
+
+**Downgrade transparency:** if the environment forces a fallback (e.g. xlwings→openpyxl so a pivot
+can't be made), the gate prints `DOWNGRADE: <requested feature> → <substitute>`. Silent fallback is
+forbidden. `verify_workbook.py`, `xlsx_doctor.py`, `roundtrip_gate.py`, `verify_xlsx.py`,
+`recalc_check.py`, `formula_lint.py` all ship in `scripts/` (stdlib + openpyxl; `verify_xlsx` needs
+Excel+pywin32; `recalc_check` uses whatever recalc engine is present).
 
 ## Workflow (follow every time you write an .xlsx)
 
@@ -236,15 +331,24 @@ that computes the numbers — and the gate re-derives them from the rendered cel
 
 ## Automating the gate in Claude Code (recommended)
 
-Add a PostToolUse hook so the gate runs automatically after any .xlsx write and
+Add a PostToolUse hook so the protocol gate runs automatically after any .xlsx write and
 blocks (exit 2) until clean, prompting same-turn self-correction. Put in
 `.claude/settings.json`:
 
 ```json
 { "hooks": { "PostToolUse": [ { "matcher": "Write|Edit", "hooks": [
   { "type": "command",
-    "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.xlsx) python scripts/xlsx_doctor.py \"$f\" >&2 || exit 2;; esac" }
+    "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.xlsx) python scripts/verify_workbook.py \"$f\" >&2 || exit 2;; esac" }
 ] } ] } }
 ```
 
-(Adjust the script path to where you install the skill.)
+(Adjust the script path to where you install the skill. The dispatcher runs `xlsx_doctor`
+and blocks on a missing contract — see "No free-pass" above.)
+
+> **Free-pass hole to close:** this hook only fires on `Write`/`Edit` tool calls — i.e. the
+> **openpyxl/xlsxwriter** branches. **xlwings and COM mutate the file through an open Excel
+> process, not a Write/Edit call**, so the hook never sees them. For those branches you must run
+> the dispatcher **manually** after the mutation, passing the pre-mutation snapshot:
+> `python scripts/verify_workbook.py <file> --backend xlwings --before <snapshot> --recalc`.
+> (Also: while Excel holds the file open, `xlsx_doctor` reads a possibly stale/locked copy — run
+> the gate after the workbook is saved/closed, not on every live keystroke.)
