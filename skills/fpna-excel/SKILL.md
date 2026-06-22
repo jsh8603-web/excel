@@ -37,6 +37,21 @@ description: >
 
 > 단계 판정 한 줄: "분석표(보고서/모델/테이블)를 만드는가?" → YES면 analysis=ALWAYS. "입력 정형화·구조 반출·암복호화 같은 곁작업인가?" → ingest/profile/transport=ONLY IF. `classify_stage(요청)` 가 키워드로 이 판정을 코드로 수행하고, `route(요청)` 는 analysis 면 dispatch 까지 이어 template+next_command 를 돌려준다.
 
+## 0.5 freehand 경계 — 표준 30종에 없는 ad-hoc 엑셀
+
+stage=analysis 인데 `dispatch` 가 §2 표준 유형(30종) 어디에도 못 떨어뜨리는 **일회성·특이양식**
+요청이거나, 외부에서 받은 **깨진 .xlsx 를 손으로 고쳐야** 하면 → repo 스파인이 아니라
+`freehand-excel-integrity` 스킬로 작성한다(사이드카 계약 `.contract.json` + `xlsx_doctor` 게이트).
+
+판정 한 줄: **"이 요청이 §2 표 안 유형에 맞는가?"** → YES면 그대로 ALWAYS(run_report) 경로. NO면 freehand.
+
+- 표준 유형에 맞으면 **run_report 가 무조건 우선** — 룩(house_style 100% 일치)·conserve 게이트를
+  코드로 강제하므로 freehand 보다 보장이 강하다.
+- freehand 는 룩 100% 일치는 못 하고 "깨지지 않은 단정한 표" 수준이다. 회사 표준 룩이 꼭
+  필요하면 freehand 산출이라도 마무리는 repo `house_style.py` 경로로 다시 렌더한다.
+- 두 검사기는 별개다 — repo 산출 점검은 `tools/excel_doctor.py`(house_style 캐논 인지),
+  프리핸드 산출 점검은 스킬의 `scripts/xlsx_doctor.py`(repo 무의존, 계약 기반).
+
 ## 1. ALWAYS — 필수 경로 (분석표 산출 = stage analysis, 예외 없음)
 
 ```

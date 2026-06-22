@@ -74,6 +74,14 @@ that should equal its parts; a "field" is any numeric column with a sign/range/s
 constraint. Whether the numbers come from live formulas or are computed in code and
 written as static values, the same gate applies (see the value-fed section below).
 
+**Priority vs. a hardened template pipeline.** If the report type is already covered
+by a dedicated template/build pipeline (one that enforces the house look and the
+conserve/tie-out gates in code), **prefer that pipeline** — it guarantees the look and
+the invariants more strongly than freehand can. Use this skill for *ad-hoc / non-template*
+workbooks, quick one-offs, or **repairing an external .xlsx** you were handed. (In the
+`jsh8603-web/excel` repo, that pipeline is the `fpna-excel` router → `run_report`; this
+skill covers what its 30 templates don't.)
+
 ## Workflow (follow every time you write an .xlsx)
 
 1. **Author** the workbook following the Authoring Rules below.
