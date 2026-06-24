@@ -113,7 +113,16 @@ def _value_like(c: Cell) -> bool:
             return False
         if _MARKER_RE.search(s):
             return True
+        # 통계 결측 센티넬(-, …, N/A 등)도 *데이터 슬롯*을 점유 → 값으로 인정.
+        # (KOSIS류: 전부 '-' 인 행이 헤더밴드 data-run 을 끊어 실데이터 첫행이 헤더로
+        #  오흡수되는 것 차단. 헤더 라벨은 보통 센티넬 단독이 아니라 오탐 위험 낮음.)
+        if s in _DATA_SENTINELS:
+            return True
     return False
+
+
+# 데이터 영역의 결측 표기(숫자 슬롯을 차지하는 placeholder). 정확 일치만(오탐 회피).
+_DATA_SENTINELS = frozenset({"-", "–", "—", "...", "…", "N/A", "n/a", "na", "X", "x", "."})
 
 
 def _col_dominant_type(block_cells: list[Cell], b: Block,
