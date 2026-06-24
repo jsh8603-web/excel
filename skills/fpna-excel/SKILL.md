@@ -191,6 +191,7 @@ stage 판정 후, 산출 성격에 따라 네 갈래로 라우팅한다. 정형�
 | 비정형 생성 | 일회성 ad-hoc 표 | freehand-excel-integrity: house_style 적용 + `xlsx_doctor`(contract 선언) | [1]~[15] |
 | 외부 입수 | 우리가 안 만든 .xlsx 검수 | `xlsx_doctor --external` → `tools/restyle.py`(비파괴) | golden 금지·재계산 기본 |
 | 세션 편집 | "이 행 추가/숫자 바꿔" | `house_style.edit_cell`(직접 ws[ref]=v 금지) | `xlsx_doctor --golden`(턴마다 드리프트) |
+| 혼합(한 시트) | 정형블록+freehand 공존(예: ACTUAL/FCST 좌우 + 메모) | `design_zones.draw_house_block`로 정형블록 생성(숨김 마커 2트랙 + 좌표-free 계약) | `xlsx_doctor [16]` strict zone(정형블록 hard·freehand 관용). 설계=`.consult-design-zones/DESIGN.md` |
 
-원칙: **정형은 편집하지 말고 재실행**(드리프트 원천 차단). 비정형/외부/편집만 가드 경로.
+원칙: **정형은 편집하지 말고 재실행**(드리프트 원천 차단). 비정형/외부/편집만 가드 경로. 한 시트 혼합은 정형블록만 strict zone, 나머지 freehand.
 4도구 선택은 신호 기반(router.decide): 재계산필요=xlwings·신규대량=xlsxwriter·편집/기본=openpyxl·피벗=xlwings(.api COM). 침묵 폴백 금지(DOWNGRADE 명시).

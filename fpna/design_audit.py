@@ -61,11 +61,48 @@ def design_findings(wb) -> dict:
     return f
 
 
+def zone_findings(wb, contract) -> dict:
+    """영역(zone) 위반 수집 — 한 시트 내 정형블록 한정(좌표 free, 마커 2트랙 기반).
+
+    반환 {resolved_drift, unsealed, unknown_block}. 마커 없는 시트는 빈 결과(혼합 아님).
+      · resolved_drift: 블록 셀의 실제 서식 ≠ 계약 스펙(태그 불신·재계산). role=set_cell role.
+      · unsealed: 마커 bounding box 안 데이터셀인데 row/col band 미커버(미경유 삽입·구멍).
+    """
+    from fpna import design_zones as dz
+    out = {"resolved_drift": [], "unsealed": [], "unknown_block": []}
+    blocks = contract.get("blocks", {})
+    for ws in wb.worksheets:
+        cells, row_map, col_map = dz.resolve_blocks(ws, contract)
+        _, _, anchor = dz.read_band_maps(ws)
+        if anchor is None:
+            continue
+        for (r, c), (rb, cb, bid) in cells.items():
+            spec = blocks.get(bid, {}).get("spec")
+            if spec is None:
+                continue                              # 스펙 대상 아닌 band(label 등) — freehand 관용
+            if dz.canon(dz.resolved(ws.cell(r, c))) != dz.canon(spec):
+                out["resolved_drift"].append((ws.title, ws.cell(r, c).coordinate, bid, cb))
+        # unsealed: 마커 quadrant 안 데이터셀인데 row/col band 중 *한쪽만* 커버(=미경유 침입/구멍).
+        # 둘 다 커버=정상 셀, 둘 다 미커버=진짜 freehand → 관용.
+        ar, ac = anchor
+        for rr in range(ar + 1, ws.max_row + 1):
+            for cc in range(ac + 1, ws.max_column + 1):
+                cell = ws.cell(rr, cc)
+                if cell.value in (None, ""):
+                    continue
+                inr, inc = (rr in row_map), (cc in col_map)
+                if inr != inc:                        # XOR = 한 축만 블록 territory
+                    out["unsealed"].append((ws.title, cell.coordinate))
+    return out
+
+
 def assert_design_standard(rep: QCReport, wb, *, fail_on_decoration: bool = True,
+                           contract=None,
                            name: str = "디자인 표준(FAST/ICAEW/Macabacus)") -> bool:
     """디자인 위반을 QCReport 에 기록. 장식문자는 hard-fail(기본), 나머지는 보고.
 
     house_style 토큰을 직접 읽으므로 표준대로 생성된 산출(set_cell/brand_header)엔 침묵한다.
+    contract 주면(혼합 시트) 영역별 strict — resolved_drift·unsealed 가 추가 hard-fail.
     """
     f = design_findings(wb)
     decor = f["decoration"]
@@ -77,6 +114,17 @@ def assert_design_standard(rep: QCReport, wb, *, fail_on_decoration: bool = True
     if rest:
         detail = (detail + " | " if detail else "") + "정렬/폰트/주석 %d건: %s" % (len(rest), ", ".join(rest[:6]))
     rep.add(name, ok, detail)
+    if contract is not None:
+        z = zone_findings(wb, contract)
+        zhard = z["resolved_drift"] + z["unsealed"] + z["unknown_block"]
+        zok = not zhard
+        zdetail = ""
+        if z["resolved_drift"]:
+            zdetail = "drift %d: %s" % (len(z["resolved_drift"]), z["resolved_drift"][:4])
+        if z["unsealed"]:
+            zdetail = (zdetail + " | " if zdetail else "") + "unsealed %d: %s" % (len(z["unsealed"]), z["unsealed"][:4])
+        rep.add("영역 디자인(strict zone)", zok, zdetail)
+        ok = ok and zok
     return ok
 
 
@@ -99,6 +147,35 @@ def _clean_label(text):
         prev = t
         t = _DECOR_STRIP.sub("", t)
     return t.strip()
+
+
+def restyle_zone(wb, contract) -> list:
+    """혼합 시트의 strict 블록 수선 — resolved_drift 셀에 set_cell(role) 재적용(override 제거,
+    값 불변). unsealed 는 자동수정 안 하고 flag 반환(인간 판정). 비파괴: 값/수식 불변 단언."""
+    from fpna import house_style as hs
+    z = zone_findings(wb, contract)
+    blocks = contract.get("blocks", {})
+    actions, before = [], {}
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                if _isnum(c.value) or _is_formula(c.value) or isinstance(c.value, str):
+                    before[(ws.title, c.coordinate)] = c.value
+    for (title, coord, bid, cb) in z["resolved_drift"]:
+        ws = wb[title]
+        role = blocks.get(bid, {}).get("role", "calc")
+        cell = ws[coord]
+        hs.set_cell(ws, cell.row, cell.column, cell.value, role=role)   # 룩 재적용, 값 보존
+        actions.append(("retag", title, coord, role))
+    for (title, coord) in z["unsealed"]:
+        actions.append(("flag_unsealed", title, coord))
+    for ws in wb.worksheets:                              # 비파괴 단언
+        for row in ws.iter_rows():
+            for c in row:
+                k = (ws.title, c.coordinate)
+                if k in before and c.value != before[k]:
+                    raise AssertionError("restyle_zone 가 값을 바꿈: %s %r→%r" % (k, before[k], c.value))
+    return actions
 
 
 def restyle_inplace(wb) -> list:

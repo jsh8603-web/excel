@@ -805,6 +805,23 @@ def doctor(path, fix=False, inplace=False, contract_path=None, do_recalc=False, 
         if external:
             print("    → 외부 파일: `python restyle.py %s` 로 서식만 비파괴 정규화 가능(값·수식 불변)." % os.path.basename(path))
 
+    # [16] 영역 strict zone — 혼합시트(정형블록+freehand). 계약에 blocks(zone spec) 선언 +
+    # repo 안(fpna import 가능)일 때만 활성. 정형블록은 hard-fail, freehand는 관용.
+    if contract_obj.get("blocks"):
+        try:
+            from fpna import design_audit as _da
+            z = _da.zone_findings(wb, contract_obj)
+            zhits = z["resolved_drift"] + z["unsealed"] + z["unknown_block"]
+            print("\n[16] 영역 strict zone(정형블록): %s" % ("통과 ✓" if not zhits else "%d건 위반" % len(zhits)))
+            for kind in ("resolved_drift", "unsealed", "unknown_block"):
+                for item in z[kind][:6]:
+                    print("    ✗ [%s] %s" % (kind, item))
+            if zhits:
+                fatal = True
+                print("    → strict 블록 룩 위반/미경유 침입. set_cell(role) 재적용 또는 매니페스트 점검.")
+        except ImportError:
+            print("\n[16] 영역 strict zone: skip(repo 밖 — fpna 미임포트, 독립 doctor 모드)")
+
     if do_golden:
         import json as _json
         gp = path.rsplit(".", 1)[0] + ".golden.json"

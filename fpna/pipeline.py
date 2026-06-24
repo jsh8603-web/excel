@@ -164,7 +164,10 @@ def _base_owned_gate(rep: QCReport, wb, data, template) -> bool:
     layout_audit.assert_cell_content_types(rep, wb, _meta(wb))
     # 표현층 게이트(디자인 표준): 장식문자/숫자 좌정렬/비표준 폰트/헤더근처 장문.
     # house_style 토큰을 직접 읽어 표준대로 생성된 산출엔 침묵(오탐 0). 장식문자는 hard-fail.
-    design_audit.assert_design_standard(rep, wb)
+    # 혼합 시트(정형블록+freehand): 빌더가 wb._fpna_zone_contract 를 달면 영역별 strict 추가.
+    # 표준 템플릿(29종)은 이 속성이 없어 contract=None → 기존 동작 그대로(회귀 0).
+    zone_contract = getattr(wb, "_fpna_zone_contract", None)
+    design_audit.assert_design_standard(rep, wb, contract=zone_contract)
     return rep.passed
 
 
