@@ -96,7 +96,20 @@ def detect_blocks(cells: list[Cell], *, gap: int = GAP_TOL,
         b = Block(min(rows), max(rows), min(cols), max(cols))
         area = b.n_rows * b.n_cols
         density = len(comp) / area if area else 0.0
-        if b.n_cols >= min_cols and b.n_rows >= min_rows and density >= min_density:
+        # 채움밀도 게이트. 단 좌측 ditto 라벨컬럼(반복 빈칸)이 많은 큰 표는 전체 density
+        # 가 낮아도 정당한 표다(값열·최내측 키열은 매행 채워짐). USPTO 단일 density 가
+        # '4키 ditto + 값열 1개' 류를 통째로 탈락시켜 tidy 0 무음손실 → 커버리지로 보강:
+        #   행 커버(채워진 셀 있는 행 비율) 높고 + 매행 가까이 채워진 dense 컬럼 존재 →
+        #   산발 노이즈가 아닌 columnar 표로 인정.
+        nrows = b.n_rows
+        row_cover = len(set(rows)) / nrows if nrows else 0.0
+        col_fill: dict = {}
+        for cc in cols:
+            col_fill[cc] = col_fill.get(cc, 0) + 1
+        dense_cols = sum(1 for n in col_fill.values() if n >= 0.5 * nrows)
+        columnar = row_cover >= 0.9 and dense_cols >= 1
+        if (b.n_cols >= min_cols and b.n_rows >= min_rows
+                and (density >= min_density or columnar)):
             blocks.append(b)
     # 위→아래, 좌→우 정렬(결정성)
     blocks.sort(key=lambda x: (x.min_row, x.min_col))

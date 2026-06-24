@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fpna._bootstrap  # noqa: F401
@@ -50,10 +51,21 @@ def check(path: str, out_dir: str, *, sheet: str | None = None) -> tuple:
         fails.append("HIGH_REJECT_RATE smell")
 
     data = [r for r in rows if r.row_role == "data"]
-    bad_metric = [r for r in data if r.metric is None or _is_numeric_str(r.metric)
+
+    # metric 불순 = None / 센티넬. 순수 숫자 metric 은 *값 누수*일 수도(나쁨),
+    # *정당한 숫자 카테고리*일 수도(예: 100분위 라벨 '1'~'100', 연령코드) — 구분 필요.
+    # 판정: 숫자 metric 이 여러 행에 *반복*되면 헤더 라벨(카테고리), 행마다 *고유*하면
+    # 값 누수. → 고유(count==1) 숫자 metric 이 전체의 절반 넘으면 누수로 FAIL.
+    metric_counts = Counter(r.metric for r in data)
+    bad_metric = [r for r in data if r.metric is None
                   or (isinstance(r.metric, str) and r.metric.strip() in _SENT)]
     if bad_metric:
-        fails.append("metric 불순 %d행 예:%r" % (len(bad_metric), bad_metric[0].metric))
+        fails.append("metric 불순(None/센티넬) %d행 예:%r" % (len(bad_metric), bad_metric[0].metric))
+    num_uniq = [r for r in data
+                if _is_numeric_str(str(r.metric)) and metric_counts[r.metric] == 1]
+    if data and len(num_uniq) > 0.5 * len(data):
+        fails.append("metric 값누수 의심 %d행(숫자 metric 대부분 고유) 예:%r"
+                     % (len(num_uniq), num_uniq[0].metric))
 
     no_entity = [r for r in data if r.entity is None or str(r.entity).strip() == ""]
     if no_entity:
@@ -64,13 +76,15 @@ def check(path: str, out_dir: str, *, sheet: str | None = None) -> tuple:
     if no_period:
         fails.append("period 결측 %d행" % len(no_period))
 
+    # 헤더 누수 = 센티넬('-' 등)이 entity/metric/period 로 침입(명백 오류).
+    # 숫자값은 정당한 카테고리·연도일 수 있어 여기서 제외(위 metric 값누수 휴리스틱이 담당).
     leak = []
     for r in data:
         for fld in (r.entity, r.metric, r.period):
-            if isinstance(fld, str) and (fld.strip() in _SENT or _is_numeric_str(fld)):
+            if isinstance(fld, str) and fld.strip() in _SENT:
                 leak.append((fld, r.src_row, r.src_col)); break
     if leak:
-        fails.append("헤더 누수 %d행 예:%r@R%dC%d" % (len(leak), *leak[0]))
+        fails.append("헤더 센티넬 누수 %d행 예:%r@R%dC%d" % (len(leak), *leak[0]))
 
     ok = not fails
     summary = "%-34s %s | rows=%d reject=%d sheets_recon_ok=%s smells=%d" % (

@@ -40,7 +40,10 @@ def fetch(org_id: str, tbl_id: str, *, periods: int = 3, prdse: str = "M") -> li
             "itmId": "ALL", "prdSe": prdse, "newEstPrdCnt": str(periods),
             "format": "json", "jsonVD": "Y"}
     last_err = None
-    for objspec in ({"objL1": "ALL", "objL2": "ALL", "objL3": "ALL"},
+    # objL 차수 모름 → 多→少 순 시도, 첫 데이터 응답 채택(과차수는 KOSIS 가 에러→폴백).
+    for objspec in ({"objL1": "ALL", "objL2": "ALL", "objL3": "ALL", "objL4": "ALL", "objL5": "ALL"},
+                    {"objL1": "ALL", "objL2": "ALL", "objL3": "ALL", "objL4": "ALL"},
+                    {"objL1": "ALL", "objL2": "ALL", "objL3": "ALL"},
                     {"objL1": "ALL", "objL2": "ALL"},
                     {"objL1": "ALL"}):
         p = dict(base, **objspec)
