@@ -84,3 +84,19 @@ FP&A 산출물(.xlsx)의 **룩·레이아웃 규칙**을 문서화한다. 코드
 - 분개·브리지 = R3 tie-out(`assert_tie_out`) — 누락·중복 차단.
 
 QC 미통과 산출물은 `render` 게이트가 저장을 보류한다(부정직 산출 차단).
+
+## 6. 디자인 *검사* 계층 (design_audit.py) — 2026-06 추가
+
+생성 측(house_style)이 표준을 *적용*한다면, `fpna/design_audit.py` 는 그 표준을 *어겼는지*
+잡는다(freehand·외부입수 대비). house_style 토큰(ALLOWED_SIZES/SIZE_TITLE/역할색)을 직접
+읽어 SSOT 와 정합 — 표준대로 생성된 산출엔 침묵(오탐 0).
+
+- `assert_design_standard(rep, wb)` — run_report 스파인(`_base_owned_gate`)에 연결. 장식문자
+  (별표/마크다운 강조)는 hard-fail, 숫자 좌/가운데 정렬·비표준/과대 폰트·헤더근처 장문은 보고.
+- `edit_cell(ws, ref, value)` (house_style) — 세션 중 수정은 직접 `ws[ref]=v` 대신 이걸로.
+  기존 role/서식/정렬을 유지해 **편집 드리프트**를 차단한다.
+- `restyle_inplace(wb)` / `tools/restyle.py` — **외부 입수** 파일을 표준으로 *비파괴* 정규화
+  (서식만, 숫자·수식 값 불변을 저장 전 단언). 외부 파일엔 golden diff 를 쓰지 않는다.
+
+근거 표준(FAST/ICAEW/Macabacus)은 freehand-excel-integrity 스킬의
+`references/design-standard-references.md` 참조.

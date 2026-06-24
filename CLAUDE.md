@@ -70,6 +70,18 @@ fpna/packs/           팩 카탈로그 레지스트리. make_spec()→PackSpec. 
 - **단일 의도** → `dispatch.md`(L1): 한 요청 → 한 템플릿. `dispatcher.dispatch` cascade.
 - **연동 묶음** → `packs.md`(L2): 여러 장표가 공유 가정·크로스시트 tie 로 묶일 때. `dispatcher.classify_stage` 가 pack 게이트로 선분류 → `pack.build_pack`(스파인 경유, 모델체크 A=L+E·현금 tie). 단일 exhibit 이면 팩으로 부풀리지 말 것(과투자).
 
+### Excel 작업 진입 (라우팅 스위치)
+- "excel/엑셀" 트리거 → **fpna-excel 스킬로 진입**. 직접 openpyxl freehand 금지.
+  파이프라인이 grain→contract→QC→**design 게이트**를 우회 없이 소유(run_report 스파인).
+- 경로 판정(상세 라우팅·절차는 스킬이 가짐):
+  - 정형 반복 산출물(주간 CME 등) → **템플릿 재실행(run_report)**. 편집 아님 → 드리프트 원천 차단.
+  - 비정형/일회성 → **freehand-excel-integrity 스킬**(house_style 적용 + xlsx_doctor + contract).
+  - 외부 입수 파일(우리가 안 만든 .xlsx) → `xlsx_doctor --external` + `tools/restyle.py`(비파괴).
+  - 세션 중 수정 → `house_style.edit_cell` + `xlsx_doctor --golden`. **직접 ws[ref]=v 금지.**
+- 4도구 선택은 신호 기반(router.decide): 재계산필요=xlwings · 신규대량=xlsxwriter ·
+  편집/기본=openpyxl · 피벗/슬라이서=xlwings(.api COM). 침묵 폴백 금지(DOWNGRADE 명시).
+- 강제는 코드(`pipeline._base_owned_gate` 의 design_audit), 절차는 SKILL.md, 전역은 스위치만.
+
 ### ingest 파이프라인 단계 (상세: rules/normalize_rules.md)
 셀 평면화(값+수식 두 번 로드) → 블록 탐지(connected-component+density) → 비데이터 행 격리(제목/단위/각주)
 → 병합 fill + 2-pass 헤더 분류 → behead 언피벗(방향 매칭) → 소계 플래그 → 센티넬/괄호·세모음수/단위 정규화

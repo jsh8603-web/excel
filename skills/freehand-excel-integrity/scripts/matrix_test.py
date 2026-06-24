@@ -25,9 +25,8 @@ except ImportError:
 
 
 def verdict(path, flags):
-    r = subprocess.run([sys.executable, DOCTOR, path] + flags, capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
-    o = r.stdout or ""
+    r = subprocess.run([sys.executable, DOCTOR, path] + flags, capture_output=True, text=True)
+    o = r.stdout
     return "dirty" if "이슈 발견" in o else ("clean" if "치명 이슈 없음" in o else "?")
 
 

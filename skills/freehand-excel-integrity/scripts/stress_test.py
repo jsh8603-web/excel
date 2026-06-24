@@ -18,9 +18,8 @@ DOCTOR = os.path.join(HERE, "xlsx_doctor.py")
 
 
 def run_doctor(path):
-    r = subprocess.run([sys.executable, DOCTOR, path], capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
-    return r.returncode, (r.stdout or "")
+    r = subprocess.run([sys.executable, DOCTOR, path], capture_output=True, text=True)
+    return r.returncode, r.stdout
 
 
 def expect(out, needle, case):
@@ -49,9 +48,8 @@ def bucket_openpyxl(d):
         expect(out, "tie 'subtotal'", "openpyxl: 소계 미합산 탐지(fatal)"),
     ])
     # 캐시 None(생성직후)은 양성 → --recalc 로 진짜 값 surfacing 확인
-    r = subprocess.run([sys.executable, DOCTOR, p, "--recalc"], capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
-    rc = expect(r.stdout or "", "[10] 실재계산", "openpyxl: --recalc 로 stale/에러 surfacing")
+    r = subprocess.run([sys.executable, DOCTOR, p, "--recalc"], capture_output=True, text=True)
+    rc = expect(r.stdout, "[10] 실재계산", "openpyxl: --recalc 로 stale/에러 surfacing")
     return base and rc
 
 

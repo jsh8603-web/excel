@@ -26,7 +26,7 @@ from openpyxl.workbook.workbook import Workbook
 
 from fpna.templates.base import QCReport, qc_no_formula_errors
 from fpna import view_contract as vc
-from fpna import layout_audit, formula_audit
+from fpna import layout_audit, formula_audit, design_audit
 
 
 # 모듈 사적 mint 토큰 — receipt 위조 차단(외부에서 GatePass 직접 만들어도 token 불일치).
@@ -162,6 +162,9 @@ def _base_owned_gate(rep: QCReport, wb, data, template) -> bool:
     # 콘텐츠 타입 계약: 숫자영역에 텍스트(주석/헤더 누수) 차단 → #VALUE! 상류 차단.
     # 템플릿이 _fpna_meta['numeric_regions'] / ['header_rows'] 선언 시 강제, 없으면 no-op.
     layout_audit.assert_cell_content_types(rep, wb, _meta(wb))
+    # 표현층 게이트(디자인 표준): 장식문자/숫자 좌정렬/비표준 폰트/헤더근처 장문.
+    # house_style 토큰을 직접 읽어 표준대로 생성된 산출엔 침묵(오탐 0). 장식문자는 hard-fail.
+    design_audit.assert_design_standard(rep, wb)
     return rep.passed
 
 

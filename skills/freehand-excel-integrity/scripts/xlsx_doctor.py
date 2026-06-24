@@ -521,6 +521,113 @@ def provenance_untraced(wb, src_vals, declared=frozenset(), tol=0.01):
     return out
 
 
+_DECOR_RE = re.compile(r"(\*\*.+\*\*|\*{3,}|[★☆■◆▶●]{1,}\s*\S|^\s*[\*\-=]{3,})")
+
+
+def _hs_tokens():
+    """house_style 에서 허용 폰트 크기·제목 상한을 읽어 린터를 SSOT 에 정합.
+    repo 안에서 돌면 진짜 fpna.house_style 를, 독립 스킬이면 vendored house_style_min 을 쓴다."""
+    import importlib
+    for modname in ("fpna.house_style", "house_style", "house_style_min"):
+        try:
+            m = importlib.import_module(modname)
+            sizes = getattr(m, "ALLOWED_SIZES", None) or {
+                m.SIZE_BODY, m.SIZE_SMALL, m.SIZE_EYEBROW, m.SIZE_TITLE,
+                m.SIZE_SUBTITLE, m.SIZE_SECTION}
+            return set(sizes), float(m.SIZE_TITLE)
+        except Exception:
+            continue
+    return None, 20.0
+
+
+def golden_fingerprint(wb):
+    """열별 스타일 지문: {sheet: {col: {nf:[..], align:[..], size:[..]}}}.
+    값이 있는 셀의 number_format/정렬/폰트크기 집합을 기록(편집 드리프트 기준선)."""
+    fp = {}
+    for ws in wb.worksheets:
+        cols = {}
+        for row in ws.iter_rows():
+            for c in row:
+                if c.value is None:
+                    continue
+                d = cols.setdefault(c.column, {"nf": set(), "align": set(), "size": set()})
+                d["nf"].add(c.number_format or "General")
+                d["align"].add((c.alignment.horizontal if c.alignment else None) or "general")
+                d["size"].add(c.font.size if (c.font and c.font.size) else None)
+        fp[ws.title] = {str(k): {kk: sorted(x for x in vv if x is not None)
+                                 for kk, vv in v.items()} for k, v in cols.items()}
+    return fp
+
+
+def golden_compare(wb, golden):
+    """현재 파일이 골든 지문을 벗어난 셀(편집으로 새로 생긴 서식/정렬/크기)을 보고."""
+    out = []
+    for ws in wb.worksheets:
+        g = golden.get(ws.title)
+        if not g:
+            continue
+        for row in ws.iter_rows():
+            for c in row:
+                if c.value is None:
+                    continue
+                gc = g.get(str(c.column))
+                if not gc:
+                    continue
+                nf = c.number_format or "General"
+                al = (c.alignment.horizontal if c.alignment else None) or "general"
+                sz = c.font.size if (c.font and c.font.size) else None
+                bad = []
+                if gc.get("nf") and nf not in gc["nf"]:
+                    bad.append("서식 %s" % nf)
+                if gc.get("align") and al not in gc["align"]:
+                    bad.append("정렬 %s" % al)
+                if gc.get("size") and sz is not None and sz not in gc["size"]:
+                    bad.append("폰트 %s" % sz)
+                if bad:
+                    out.append("%s!%s 드리프트: %s (기준선 밖)" % (ws.title, c.coordinate, ", ".join(bad)))
+    return out
+
+
+def design_lint(wb):
+    """디자인 표준(FAST/ICAEW/Macabacus) 자문 점검. 보수적·저오탐.
+    허용 폰트 크기·제목 상한은 house_style(_min) SSOT 에서 읽어 표준 산출엔 침묵."""
+    allowed, title_max = _hs_tokens()
+    out = []
+    for ws in wb.worksheets:
+        sizes = set()
+        long_text_top = 0
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if c.font and c.font.size:
+                    sizes.add(c.font.size)
+                # 장식 문자(fpna 스타일은 간결 라벨)
+                if isinstance(v, str) and _DECOR_RE.search(v):
+                    out.append("%s!%s 장식문자(별표/강조 — 간결 라벨 권장) %r"
+                               % (ws.title, c.coordinate, v[:30]))
+                # 숫자인데 명시적 좌/가운데 정렬(숫자는 우측정렬: FAST/Macabacus)
+                if _isnum(v) and c.alignment and c.alignment.horizontal in ("left", "center"):
+                    out.append("%s!%s 숫자 %s정렬(숫자는 우측정렬)"
+                               % (ws.title, c.coordinate, c.alignment.horizontal))
+                # 헤더 폰트 과대: house_style 제목 상한 초과만(정상 제목 오탐 방지)
+                if c.font and c.font.size and c.font.size > title_max and v not in (None, ""):
+                    out.append("%s!%s 폰트 %gpt 과대(표준 제목 %gpt 초과)"
+                               % (ws.title, c.coordinate, c.font.size, title_max))
+                # 헤더 근처(상단 5행) 장문 설명 → 주석은 별도 notes 위치로
+                if isinstance(v, str) and len(v) > 150 and c.row <= 5:
+                    long_text_top += 1
+        if long_text_top:
+            out.append("%s 상단에 장문 설명 %d개(헤더 근처 과다 — 전용 notes/cover 로 분리)"
+                       % (ws.title, long_text_top))
+        if len(sizes) > 5:
+            out.append("%s 폰트 크기 %d종(일관 cell style 권장 ≤~5)" % (ws.title, len(sizes)))
+        if allowed:
+            off = sorted(s for s in sizes if s not in allowed)
+            if off:
+                out.append("%s 비표준 폰트 크기 %s(house_style 스케일 밖)" % (ws.title, off[:6]))
+    return out
+
+
 def accessibility(wb):
     """접근성/투명성 자문(보수적·저오탐): 데이터 병합·기본 시트명·숨김 시트 데이터.
     치명 아님 — 공유 산출물 품질 신호."""
@@ -578,7 +685,10 @@ def formula_consistency(wb, min_run=3):
     return out
 
 
-def doctor(path, fix=False, inplace=False, contract_path=None, do_recalc=False, source=None):
+def doctor(path, fix=False, inplace=False, contract_path=None, do_recalc=False, source=None, do_golden=False, external=False):
+    if external:
+        do_recalc = True       # 외부 입수: 우리가 안 만들었으니 은폐 에러 기본 검출
+        do_golden = False      # 외부 파일엔 골든 기준선 없음 → 현 상태를 정답으로 굳히지 않는다
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         print("파일 없음:", path); return 2
@@ -588,6 +698,7 @@ def doctor(path, fix=False, inplace=False, contract_path=None, do_recalc=False, 
     numtext = numbers_as_text(wb)
     fconsist = formula_consistency(wb)
     a11y = accessibility(wb)
+    dz = design_lint(wb)
     stray = text_in_numeric_columns(wb)
     outliers = column_format_outliers(wb)
     unguarded = unguarded_divisions(wb)
@@ -686,6 +797,29 @@ def doctor(path, fix=False, inplace=False, contract_path=None, do_recalc=False, 
     for x in a11y[:10]:
         print("    ⚠", x)
 
+    print("\n[14] 디자인 표준(FAST/ICAEW/Macabacus): %s  [자문성]" % ("양호" if not dz else "%d건" % len(dz)))
+    for x in dz[:12]:
+        print("    ⚠", x)
+    if dz:
+        print("    → 숫자 우측정렬·간결 라벨(장식 금지)·폰트 위계·주석은 전용 notes. 표준 근거: references/design-standard-references.md")
+        if external:
+            print("    → 외부 파일: `python restyle.py %s` 로 서식만 비파괴 정규화 가능(값·수식 불변)." % os.path.basename(path))
+
+    if do_golden:
+        import json as _json
+        gp = path.rsplit(".", 1)[0] + ".golden.json"
+        if not os.path.exists(gp):
+            _json.dump(golden_fingerprint(wb), open(gp, "w"), ensure_ascii=False)
+            print("\n[15] 골든 스냅샷: 기준선 기록함 → %s (이후 수정 때 --golden 으로 드리프트 대조)" % os.path.basename(gp))
+        else:
+            golden = _json.load(open(gp, encoding="utf-8"))
+            drift = golden_compare(wb, golden)
+            print("\n[15] 편집 드리프트(골든 대조): %s  [자문성]" % ("없음" if not drift else "%d건" % len(drift)))
+            for x in drift[:12]:
+                print("    ⚠", x)
+            if drift:
+                print("    → 편집은 house_style_min.edit_cell(역할·서식 유지) 로. 직접 ws[ref]=v 금지.")
+
     if source:
         try:
             declared = set()
@@ -753,9 +887,11 @@ def main(argv=None):
     ap.add_argument("--contract", default=None, help="사이드카 계약 JSON 경로(기본: <파일>.contract.json 자동탐색)")
     ap.add_argument("--recalc", action="store_true", help="헤드리스 재계산으로 은폐 에러·stale 캐시 검출(recalc.py 필요)")
     ap.add_argument("--source", default=None, help="출처추적: 모든 숫자가 이 소스(csv/xlsx)로 추적되는지 대조")
+    ap.add_argument("--golden", action="store_true", help="편집 드리프트: 첫 실행=기준선 기록, 이후=스타일 드리프트 대조")
+    ap.add_argument("--external", action="store_true", help="외부 입수 프로파일: 골든 끔 + 재계산 기본 + 디자인 교정계획")
     a = ap.parse_args(argv)
     return doctor(a.path, fix=a.fix, inplace=a.inplace, contract_path=a.contract,
-                  do_recalc=a.recalc, source=a.source)
+                  do_recalc=a.recalc, source=a.source, do_golden=a.golden, external=a.external)
 
 
 if __name__ == "__main__":

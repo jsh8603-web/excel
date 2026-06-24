@@ -117,6 +117,8 @@ SIZE_EYEBROW = 9         # eyebrow/kicker(대문자 영문, 트래킹)
 SIZE_TITLE = 20          # 영문 헤드라인(Calibri Light, 큼직하게)
 SIZE_SUBTITLE = 10.5     # 한글 부제
 SIZE_SECTION = 11        # 섹션 헤더
+# 허용 폰트 크기 집합(디자인 린트가 비표준/과대 폰트를 판정하는 SSOT).
+ALLOWED_SIZES = {SIZE_BODY, SIZE_SMALL, SIZE_EYEBROW, SIZE_TITLE, SIZE_SUBTITLE, SIZE_SECTION}
 
 # ---- 아래 토큰들은 apply_theme() 가 채운다(placeholder; import 시 1회 호출) ----
 INK = INK_SOFT = ACCENT = ACCENT_SOFT = ACCENT_DEEP = ""
@@ -289,8 +291,41 @@ def set_cell(ws: Worksheet, row: int, col: int, value=None, *,
     return cell
 
 
-# --------------------------------------------------------------------------
-# 8. 시트 외관 (gridlines off, 여백, freeze, 열폭)
+# 역할→폰트색(편집 시 role 추정용). apply_theme 후 값이 채워지므로 함수 안에서 참조.
+def _role_fg_map():
+    return {"calc": CALC_FG, "input": INPUT_FG, "link": LINK_FG, "label": INK,
+            "soft": INK_SOFT, "header": HEADER_FG, "total": INK}
+
+
+def _infer_role(cell) -> str:
+    """기존 셀의 폰트색/정렬로 role 추정(편집 시 역할 유지)."""
+    try:
+        rgb = cell.font.color.rgb if cell.font and cell.font.color else None
+        code = rgb[-6:].upper() if isinstance(rgb, str) else None
+    except Exception:
+        code = None
+    inv = {v.upper(): k for k, v in _role_fg_map().items() if v}
+    if code in inv:
+        return inv[code]
+    if cell.alignment and cell.alignment.horizontal == "left":
+        return "label"
+    return "calc"
+
+
+def edit_cell(ws: Worksheet, ref, value, *, role: str | None = None,
+              number_format: str | None = None) -> "Cell":
+    """기존 셀을 *역할·서식 유지*하며 값만 교체. 세션 중 수정은 직접 ws[ref]=v 대신 이걸 써서
+    편집 드리프트(정렬·서식·폰트가 freehand 로 틀어짐)를 차단한다.
+
+    role 미지정 시 기존 폰트색에서 추정, number_format 미지정 시 기존 유지. 빈 셀에 새 값이
+    들어가면 비표준 기본폰트(11 등) 대신 본문 크기(SIZE_BODY)로 떨어진다.
+    """
+    c = ws[ref] if isinstance(ref, str) else ws.cell(row=ref[0], column=ref[1])
+    r = role or _infer_role(c)
+    nf = number_format or (c.number_format if c.number_format and c.number_format != "General" else None)
+    prior_empty = c.value is None
+    size = SIZE_BODY if prior_empty else (c.font.size if (c.font and c.font.size in ALLOWED_SIZES) else SIZE_BODY)
+    return set_cell(ws, c.row, c.column, value, role=r, number_format=nf, size=size)
 # --------------------------------------------------------------------------
 def style_sheet(ws: Worksheet, *, freeze: str | None = "A2",
                 zoom: int = 100) -> None:

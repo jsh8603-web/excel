@@ -179,3 +179,18 @@ py -S main.py selftest                               # 무설치 재현(site-pac
 - 고정비 FP&A: `skills/fpna-fixed-cost-tables/SKILL.md` + `skills/fpna-fixed-cost-tables/claude_snippet.md`
 - 정형화 규칙: `rules/normalize_rules.md` · 디스패처: `dispatch.md` · tidy 스키마: `schema/tidy_schema.md`
 - 운영 매뉴얼: `CLAUDE.md` · 자문 종합: `out/consult-fixed-cost-3r.md`
+
+## 9. 경로 분기 — 정형/비정형/외부/편집 (2026-06)
+
+stage 판정 후, 산출 성격에 따라 네 갈래로 라우팅한다. 정형은 파이프라인이 디자인까지
+게이트하고(우회 불가), 나머지는 freehand-excel-integrity 스킬의 가드가 받친다.
+
+| 갈래 | 트리거 | 경로 | 게이트 |
+|---|---|---|---|
+| 정형(반복 산출물) | 주간 CME·표준 분석표 | `run_report` 재실행(편집 아님) | grain→contract→QC→**design_audit**(스파인 소유) |
+| 비정형 생성 | 일회성 ad-hoc 표 | freehand-excel-integrity: house_style 적용 + `xlsx_doctor`(contract 선언) | [1]~[15] |
+| 외부 입수 | 우리가 안 만든 .xlsx 검수 | `xlsx_doctor --external` → `tools/restyle.py`(비파괴) | golden 금지·재계산 기본 |
+| 세션 편집 | "이 행 추가/숫자 바꿔" | `house_style.edit_cell`(직접 ws[ref]=v 금지) | `xlsx_doctor --golden`(턴마다 드리프트) |
+
+원칙: **정형은 편집하지 말고 재실행**(드리프트 원천 차단). 비정형/외부/편집만 가드 경로.
+4도구 선택은 신호 기반(router.decide): 재계산필요=xlwings·신규대량=xlsxwriter·편집/기본=openpyxl·피벗=xlwings(.api COM). 침묵 폴백 금지(DOWNGRADE 명시).

@@ -55,6 +55,18 @@ All concrete names here (CPU/CPP, Risk Subtotal, cost lines, `SUMMARY!F42`) are
 
 ---
 
+### External intake (a file you didn't create)
+
+When asked to run an *externally produced* .xlsx through the skill, do **not** use `--golden` (there is no baseline; it would freeze the existing — possibly broken — design as the truth). Use the external profile instead:
+1. **Inspect:** `python scripts/xlsx_doctor.py <file> --external` — turns recalc on by default (hidden errors), skips golden, and lists [14] design violations as a correction plan vs the house_style standard.
+2. **Normalize (non-destructive):** `python scripts/restyle.py <file>` — restyles *formatting only* (numbers→right, non-standard fonts→snapped to the scale, decorative labels cleaned) and **never changes numbers or formulas** (asserted before save). Output `<file>.restyled.xlsx`.
+
+### Editing mid-session (avoid drift)
+
+Generation usually complies, but repeated mid-session edits ("add a row", "change this number") re-introduce freehand styling and the file drifts. Two guards:
+1. **Edit through the style API.** Use `house_style_min.edit_cell(ws, ref, value)` which keeps the cell's role/format/alignment; never `ws[ref] = v` (that strips style).
+2. **Golden baseline + per-turn diff.** Run `python scripts/xlsx_doctor.py <file> --golden` right after the first build (records `<file>.golden.json`), then again after *each* edit — `[15]` flags any cell whose format/alignment/size left the baseline. Catch drift per-turn, not at the end.
+
 When you author an .xlsx directly (openpyxl), there is no template spine to
 enforce correctness, so the same bugs recur: annotation text written into value
 cells, month/quarter headers leaking into data rows, ratios that throw #VALUE!,
@@ -110,7 +122,12 @@ Dependencies: `openpyxl` only. No pandas/numpy. The gate runs in any directory.
    denominator cell. Text in a value cell is the upstream cause of #VALUE!.
 2. **Header tokens (APR..DEC, Q1..Q4, FY) belong only in header rows.** Never write
    a month/quarter label as a value in a data row.
-3. **Ratios are guarded.** If the cell holds a live formula, write
+3. **Design discipline — apply, don't hand-style.** Generate look via `scripts/house_style_min.py` (`set_cell(role=…)`, `brand_header` = English title + Korean subtitle, `FMT_*`, `BORDER_TOTAL`) — never hardcode colors/fonts/alignment. This mirrors the repo SSOT `fpna/house_style.py`; the [14] linter reads its allowed font scale so compliant output is silent. Rules it enforces: numbers right-aligned, labels left;
+   terse labels (no asterisks/decoration); one concise title (English ok); font hierarchy
+   (title ≤18pt, header ≤14pt); annotations in a dedicated notes/cover area, never crammed
+   near headers; color = meaning only (input blue / formula black / link green). See
+   `references/design-standard-references.md`.
+4. **Ratios are guarded.** If the cell holds a live formula, write
    `=IF(OR(NOT(ISNUMBER(<den>)),<den>=0),"NA",<num>/<den>)`. **If the value is computed
    in Python and written as a static number** (no formula), then when the denominator
    is missing/zero write the string `"NA"` (or leave NO_DATA) — never write `#VALUE!`,
@@ -237,6 +254,8 @@ that computes the numbers — and the gate re-derives them from the rendered cel
 | u | Unit/scale coherence (contract `units`): scale mix in a region | fatal | one unit |
 | p | Period integrity (contract `periods`): gap/dup/reorder vs expected | fatal | fix ruler |
 | 13 | Accessibility/transparency: data merges, default sheet name, hidden data | advisory | tidy |
+| 14 | Design standard (FAST/ICAEW/Macabacus): decoration, alignment, font, annotation | advisory | references/design-standard-references.md |
+| 15 | Edit drift (`--golden`): cell style/format/align changed vs the recorded baseline | advisory | use `edit_cell` |
 
 ### Routing (which capability + backend)
 
