@@ -83,7 +83,11 @@ def zone_findings(wb, contract) -> dict:
             cell = ws.cell(r, c)
             if cell.value in (None, ""):
                 continue                              # 빈 셀 = non-data → 관용(DESIGN: 빈셀 hole 아님)
-            if dz.canon(dz.resolved(cell)) != dz.canon(spec):
+            # band 시각 비교는 dtype 제외(한 band 에 값+수식 혼재가 정당 — 누계 수식 등).
+            # dtype 기반 formula 석화 검출은 golden 경로 담당(band-spec 아님).
+            cur = {k: v for k, v in dz.resolved(cell).items() if k != "dtype"}
+            ref = {k: v for k, v in spec.items() if k != "dtype"}
+            if dz.canon(cur) != dz.canon(ref):
                 out["resolved_drift"].append((ws.title, cell.coordinate, bid, cb))
         # unsealed: 마커 quadrant 안 데이터셀인데 row/col band 중 *한쪽만* 커버(=미경유 침입/구멍).
         # 둘 다 커버=정상 셀, 둘 다 미커버=진짜 freehand → 관용.

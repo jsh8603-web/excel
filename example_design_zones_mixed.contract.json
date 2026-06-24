@@ -58,6 +58,35 @@
    },
    "role": "calc"
   },
+  "hdr::ratio": {
+   "spec": {
+    "font": [
+     "Malgun Gothic",
+     9.0,
+     true,
+     false,
+     [
+      "rgb",
+      "111418"
+     ]
+    ],
+    "fill": [
+     "solid",
+     [
+      "rgb",
+      "EEF2F3"
+     ]
+    ],
+    "num": "General",
+    "align": [
+     "center",
+     "center"
+    ],
+    "quote": false,
+    "dtype": "s"
+   },
+   "role": "calc"
+  },
   "data::actual": {
    "spec": {
     "font": [
@@ -107,6 +136,110 @@
     ],
     "quote": false,
     "dtype": "n"
+   },
+   "role": "calc"
+  },
+  "data::ratio": {
+   "spec": {
+    "font": [
+     "Malgun Gothic",
+     10.0,
+     false,
+     false,
+     [
+      "rgb",
+      "111418"
+     ]
+    ],
+    "fill": [
+     null,
+     null
+    ],
+    "num": "0.0%;(0.0%)",
+    "align": [
+     "right",
+     "center"
+    ],
+    "quote": false,
+    "dtype": "f"
+   },
+   "role": "calc"
+  },
+  "total::actual": {
+   "spec": {
+    "font": [
+     "Malgun Gothic",
+     10.0,
+     true,
+     false,
+     [
+      "rgb",
+      "111418"
+     ]
+    ],
+    "fill": [
+     null,
+     null
+    ],
+    "num": "#,##0;(#,##0)",
+    "align": [
+     "right",
+     "center"
+    ],
+    "quote": false,
+    "dtype": "f"
+   },
+   "role": "calc"
+  },
+  "total::fcst": {
+   "spec": {
+    "font": [
+     "Malgun Gothic",
+     10.0,
+     true,
+     false,
+     [
+      "rgb",
+      "111418"
+     ]
+    ],
+    "fill": [
+     null,
+     null
+    ],
+    "num": "#,##0;(#,##0)",
+    "align": [
+     "right",
+     "center"
+    ],
+    "quote": false,
+    "dtype": "f"
+   },
+   "role": "calc"
+  },
+  "total::ratio": {
+   "spec": {
+    "font": [
+     "Malgun Gothic",
+     10.0,
+     true,
+     false,
+     [
+      "rgb",
+      "111418"
+     ]
+    ],
+    "fill": [
+     null,
+     null
+    ],
+    "num": "0.0%;(0.0%)",
+    "align": [
+     "right",
+     "center"
+    ],
+    "quote": false,
+    "dtype": "f"
    },
    "role": "calc"
   }
