@@ -154,14 +154,18 @@ class TestIngest(unittest.TestCase):
             ws["A4"], ws["B4"], ws["C4"], ws["D4"] = "해외", "제품C", 300, 30
             ws["A5"], ws["B5"], ws["C5"], ws["D5"] = None, "제품D", 400, 40
         res = self._ingest_wb(build)
-        # 빈칸이 채워져 국내/해외가 모든 행에 전파
+        # 빈칸이 채워져 부문(국내/해외)이 모든 행 entity 에 전파.
+        # 다중 키컬럼(부문+제품)은 metric 으로 접지 않고 entity 로 ' > ' 결합 보존.
         ents = {r.entity for r in res.tidy_rows}
-        self.assertEqual(ents, {"국내", "해외"})
+        self.assertEqual(ents, {"국내 > 제품A", "국내 > 제품B",
+                                "해외 > 제품C", "해외 > 제품D"})
         filled = [r for r in res.tidy_rows if "DITTO_FILLED" in r.flags]
         self.assertTrue(filled)                       # 일부 행은 ditto 충전 표시
         # 충전된 행은 직전 부문 값 상속(제품B → 국내, 제품D → 해외)
-        b_rows = [r for r in res.tidy_rows if r.metric and "제품B" in r.metric]
-        self.assertTrue(all(r.entity == "국내" for r in b_rows))
+        b_rows = [r for r in res.tidy_rows if r.entity and "제품B" in r.entity]
+        self.assertTrue(b_rows and all(r.entity == "국내 > 제품B" for r in b_rows))
+        # metric 은 순수 측정명(부문/제품 키 오염 없음)
+        self.assertEqual({r.metric for r in res.tidy_rows}, {"매출", "수량"})
         kinds = {s["kind"] for s in res.smells}
         self.assertIn("DITTO_FILLED", kinds)
 
@@ -326,15 +330,19 @@ class TestIngest(unittest.TestCase):
         self.assertIn("MIXED_NUMBER_FORMAT", kinds)
 
     def test_g10_no_header_suspect(self):
-        """G10(MetaCollector 흡수): 텍스트 우세 첫 행이 헤더로 먹히나 실은 데이터 → 경고."""
+        """G10: 헤더 없는 표(첫 행도 데이터) — 값 영역(첫 값셀 우측) 기준 분류로
+        텍스트 우세 첫 행도 데이터로 보존. 과거엔 헤더로 먹혀 첫 행 손실 → 이제 무손실.
+
+        (다중 라벨 컬럼이 행을 희석해도 데이터행이 헤더밴드로 오흡수되지 않음 —
+         KOSIS 3키×값2 붕괴와 같은 root cause 의 회귀 가드.)"""
         def build(ws):
-            # 첫 행도 데이터(지역/구/값)인데 텍스트 우세라 헤더밴드로 잡힘 → 첫 행 손실 위험.
             ws["A1"], ws["B1"], ws["C1"] = "서울", "강남", 100
             ws["A2"], ws["B2"], ws["C2"] = "부산", "해운대", 200
             ws["A3"], ws["B3"], ws["C3"] = "대구", "수성", 300
         res = self._ingest_wb(build)
-        kinds = {s["kind"] for s in res.smells}
-        self.assertIn("NO_HEADER_SUSPECT", kinds)
+        # 첫 행(서울/강남/100) 포함 3행 전부 보존(헤더 오흡수로 인한 손실 0).
+        self.assertEqual({r.value for r in res.tidy_rows}, {100, 200, 300})
+        self.assertIn("서울 > 강남", {r.entity for r in res.tidy_rows})
 
     def test_g11_integer_year_header(self):
         """G11: 정수형 연도 헤더(2024)도 문자열처럼 헤더로 보호 → period 정상 복원."""

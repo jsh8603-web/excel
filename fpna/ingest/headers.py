@@ -112,6 +112,13 @@ def _value_like(c: Cell) -> bool:
         if _re.fullmatch(r"\d{1,4}", s):   # bare 정수(연도 포함) = 비값
             return False
         if _MARKER_RE.search(s):
+            # 텍스트 라벨에 숫자/% 가 박힌 경우(예: '상대적빈곤율(중위소득50%이하 %)',
+            # '시군구간 전입')는 *값* 이 아니라 행/열 라벨이다. 글자(한글·영문)가 3자
+            # 이상이면 값마커를 무시하고 비값 처리 — 라벨 컬럼이 데이터열로 오분류돼
+            # 키 차원이 metric/value 로 새는 것 차단. (값성 텍스트 '3,400억'·'85%'·
+            # '(1,234)' 은 글자 0~2자라 통과.)
+            if sum(1 for ch in s if ch.isalpha()) >= 3:
+                return False
             return True
         # 통계 결측 센티넬(-, …, N/A 등)도 *데이터 슬롯*을 점유 → 값으로 인정.
         # (KOSIS류: 전부 '-' 인 행이 헤더밴드 data-run 을 끊어 실데이터 첫행이 헤더로
@@ -145,10 +152,22 @@ def _col_dominant_type(block_cells: list[Cell], b: Block,
 
 
 def _row_value_frac(block_cells: list[Cell], row: int) -> float:
-    rc = [c for c in block_cells if c.row == row and not c.is_blank]
+    """행의 '값 영역'(첫 값셀부터 오른쪽) 내 value_like 비율. -1.0 = 빈 행.
+
+    ⚠ 선두 라벨 컬럼(텍스트·빈칸·ditto 채움)은 분모에서 제외한다. 다중 키컬럼
+    (대륙/성별/연령 등)이 한 행을 희석해, fill_down_ditto 로 키칸이 채워진 뒤
+    unpivot_block 의 재분류에서 데이터행이 헤더밴드로 통째 오흡수되던 결함 차단
+    (값열 수 < 키열 수일 때 value_frac<0.5 로 붕괴: KOSIS 3키×값2). 값셀 없으면 0.0(헤더).
+    """
+    rc = sorted((c for c in block_cells if c.row == row and not c.is_blank),
+                key=lambda c: c.col)
     if not rc:
         return -1.0  # 빈 행
-    return sum(1 for c in rc if _value_like(c)) / len(rc)
+    first = next((i for i, c in enumerate(rc) if _value_like(c)), None)
+    if first is None:
+        return 0.0   # 값셀 0 = 순수 텍스트 행(헤더)
+    region = rc[first:]
+    return sum(1 for c in region if _value_like(c)) / len(region)
 
 
 def _is_year_header_row(block_cells: list[Cell], row: int) -> bool:

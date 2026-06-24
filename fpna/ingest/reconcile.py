@@ -166,13 +166,14 @@ def reconcile_sheet(sheet: str, gt: set, raw_values: dict, tidy_rows: list) -> R
     """
     rep = ReconReport(sheet=sheet, n_groundtruth=len(gt))
 
-    # tidy 의 (src_row, src_col) → 매핑 횟수. data 역할만(소계/총계 제외).
-    # 단, ERROR_CELL 도 출처 셀을 덮으므로 data 로 본다(값은 null 이나 좌표는 점유).
+    # tidy 의 (src_row, src_col) → 매핑 횟수. coverage = 출처셀이 tidy 로 옮겨졌는가
+    # (좌표 점유) — **역할 무관**. 소계/총계 행도 자기 출처셀을 보존하고, ERROR_CELL 도
+    # 좌표를 점유한다(값은 null). ⛔ role 필터 금지: groundtruth 독립 스캔은 ditto 를
+    # 적용 안 해 다중 키컬럼 *안쪽*의 소계('계' 가 ditto 로 비어있음)를 못 가려내므로,
+    # tidy 만 소계로 판정(전체 라벨)하면 그 셀이 false-missing 으로 뜬다(다중키 KOSIS).
     cover: dict[tuple[int, int], int] = {}
     coord_to_rows: dict[tuple[int, int], list] = {}
     for tr in tidy_rows:
-        if tr.row_role not in ("data",):
-            continue
         if not tr.src_row or not tr.src_col:
             continue
         key = (tr.src_row, tr.src_col)

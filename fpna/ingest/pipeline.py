@@ -74,9 +74,8 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
     """LongRow.attrs(hdr_c*/hdr_r*) → (entity, period, metric, value) 휴리스틱 매핑.
 
     - period: period 패턴인 헤더값 우선(보통 열헤더).
-    - metric: period 아닌 열헤더 또는 가장 안쪽 행헤더.
-    - entity: 가장 바깥 행헤더.
-    나머지 헤더는 metric 에 ' > ' 로 결합 보존.
+    - metric: period 아닌 열헤더(' > ' 결합). 행헤더는 metric 에 넣지 않는다.
+    - entity: 좌측 키컬럼(행헤더) 전부를 ' > ' 결합(다중 키=대륙>국가 보존).
 
     무음 손상 방어:
       ① 단위 스케일 환산 — 셀내 접미(셀) > 블록 단위(블록) > 1 우선순위로 base(원) 환산.
@@ -108,17 +107,21 @@ def _map_long_to_tidy(longs: list[LongRow], unit: str | None, sheet: str,
             else:
                 metric_parts.append(str(v))
 
-        entity = None
+        # 좌측 키컬럼(행헤더)은 *행 정체성*(entity)이다. 다중 키(예: 대륙>국가, KOSIS
+        # 국가(1)/국가(2))는 안쪽 키를 metric 으로 접지 말고 모두 entity 로 ' > ' 결합
+        # 보존한다(metric=순수 지표명 유지). 단 열헤더에 period 가 없고 행라벨이 기간이면
+        # 그 라벨은 period 로 승격(ONS 류 wide 시계열, 행=시간축).
         row_labels = [str(v) for _, v in row_vals if v is not None]
-        if row_labels:
-            entity = row_labels[0]
-            if len(row_labels) > 1:
-                metric_parts = row_labels[1:] + metric_parts
-        # 시계열(행=시간축): 열헤더에서 period 를 못 찾았는데 가장 바깥 행라벨이 기간이면
-        # 행라벨을 period 로 승격(ONS 류 wide 시계열). 아니면 행라벨은 entity 유지.
-        if period is None and entity is not None and _looks_like_period(entity):
-            period = entity
-            entity = None
+        entity_parts: list[str] = []
+        row_period = None
+        for s in row_labels:
+            if period is None and row_period is None and _looks_like_period(s):
+                row_period = s
+            else:
+                entity_parts.append(s)
+        entity = " > ".join(entity_parts) if entity_parts else None
+        if period is None and row_period is not None:
+            period = row_period
         metric = " > ".join(metric_parts) if metric_parts else None
 
         coord = "R%dC%d" % (lr.row, lr.col)
