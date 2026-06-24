@@ -19,6 +19,10 @@ description: >
 
 스킬이 켜지면 **무조건 이 4스텝**을 밟는다. 추측하지 말고 단계부터 판정한다.
 
+**⓪ 기존 .xlsx 파일이 주어졌나? (사람이 만든 것 포함)** → 추측 말고 **`py main.py excel <파일> [--fix]`**.
+코드가 파일을 검사해 경로를 자동 분기한다(에이전트 판단 X): 영역 마커/계약 있으면 **zone**(정형블록 strict),
+없으면 **external**(사람/외부 파일 비파괴 검수). `--fix`=비파괴 정규화. (신규 *생성* 요청이면 ① 로.)
+
 ```
 ① stage 판정    요청이 어느 단계인가? (dispatcher.classify_stage / route)
                   messy(누더기 입력)→ingest · clean→profile(반출)/analysis(분석)

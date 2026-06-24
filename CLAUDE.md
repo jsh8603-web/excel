@@ -73,6 +73,8 @@ fpna/packs/           팩 카탈로그 레지스트리. make_spec()→PackSpec. 
 ### Excel 작업 진입 (라우팅 스위치)
 - "excel/엑셀" 트리거 → **fpna-excel 스킬로 진입**. 직접 openpyxl freehand 금지.
   파이프라인이 grain→contract→QC→**design 게이트**를 우회 없이 소유(run_report 스파인).
+- **기존 .xlsx 파일 + "엑셀" 트리거(사람이 만든 것 포함) → `py main.py excel <파일> [--fix]` 자동 분기.**
+  코드가 파일 검사로 zone(정형블록 strict)/external(비파괴 검수) 선택 — 에이전트 추측 X. 신규 생성은 스킬 §0~§9.
 - 경로 판정(상세 라우팅·절차는 스킬이 가짐):
   - 정형 반복 산출물(주간 CME 등) → **템플릿 재실행(run_report)**. 편집 아님 → 드리프트 원천 차단.
   - 비정형/일회성 → **freehand-excel-integrity 스킬**(house_style 적용 + xlsx_doctor + contract).

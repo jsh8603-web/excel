@@ -18,6 +18,7 @@ main.py — FP&A Excel 시스템 단일 진입점.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 import fpna._bootstrap  # noqa: F401  (vendor 주입, 최우선)
@@ -340,6 +341,21 @@ def cmd_golden(args):
     return rc
 
 
+def cmd_excel(args):
+    """"엑셀" 트리거 진입점 — .xlsx 를 파일검사로 경로 자동 분기 검수. py main.py excel <파일> [--fix]"""
+    from fpna import excel_router
+    fix = "--fix" in args
+    paths = [a for a in args if not a.startswith("--")]
+    if not paths:
+        _print("사용법: py main.py excel <파일.xlsx> [--fix]"); return 2
+    mode, ok, report = excel_router.run_excel(paths[0], fix=fix)
+    _print("=== excel 라우터: %s (mode=%s) ===" % (os.path.basename(paths[0]), mode))
+    for line in report:
+        _print(line)
+    _print("판정: %s" % ("PASS ✓" if ok else "위반/교정필요"))
+    return 0 if ok else 1
+
+
 def cmd_selftest(_args):
     rc = 0
     _print("=== 골든샘플 회귀 ===")
@@ -360,7 +376,7 @@ _COMMANDS = {
     "encrypt": cmd_encrypt, "decrypt": cmd_decrypt,
     "dispatch": cmd_dispatch, "report": cmd_report, "render": cmd_render,
     "pack": cmd_pack, "analyze": cmd_analyze,
-    "golden": cmd_golden, "selftest": cmd_selftest,
+    "golden": cmd_golden, "selftest": cmd_selftest, "excel": cmd_excel,
 }
 
 
