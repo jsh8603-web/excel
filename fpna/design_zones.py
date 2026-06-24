@@ -188,12 +188,32 @@ def block_of(rowband, colband, contract) -> str:
     return contract.get("band_map", {}).get(key, key)
 
 
+def _trim_to_data(ws, row_map, col_map):
+    """RLE 가 max_row/col 까지 과확장하는 것 bound — 블록 컬럼/행에 데이터 있는 마지막
+    행·열까지로 잘라 블록 밖(아래/오른쪽) freehand 흡수를 차단. trailing 빈 영역 제거."""
+    if not row_map or not col_map:
+        return row_map, col_map
+    rows, cols = sorted(row_map), sorted(col_map)
+    last_r = rows[0]
+    for r in rows:
+        if any(ws.cell(r, c).value not in (None, "") for c in cols):
+            last_r = r
+    last_c = cols[0]
+    for c in cols:
+        if any(ws.cell(r, c).value not in (None, "") for r in rows if r <= last_r):
+            last_c = c
+    return ({r: b for r, b in row_map.items() if r <= last_r},
+            {c: b for c, b in col_map.items() if c <= last_c})
+
+
 def resolve_blocks(ws, contract):
     """시트 내 각 데이터 셀의 (rowband, colband, block_id) 해소.
-    반환 (cells{(r,c):(rowband,colband,block_id)}, row_map, col_map). 마커 교차점만."""
+    반환 (cells{(r,c):(rowband,colband,block_id)}, row_map, col_map). 마커 교차점만.
+    RLE 는 데이터 extent 까지만 bound(trailing 빈 영역·블록 밖 흡수 차단)."""
     row_map, col_map, anchor = read_band_maps(ws)
     if anchor is None:
         return {}, {}, {}
+    row_map, col_map = _trim_to_data(ws, row_map, col_map)
     cells = {}
     for r, rb in row_map.items():
         for c, cb in col_map.items():

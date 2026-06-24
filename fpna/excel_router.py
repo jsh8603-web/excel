@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from fpna import _bootstrap  # noqa: F401  vendor 주입
 from openpyxl import load_workbook
@@ -26,6 +27,21 @@ from fpna import design_audit as da
 
 def _contract_path(path):
     return path.rsplit(".", 1)[0] + ".contract.json"
+
+
+# 콤마/통화/괄호음수가 텍스트로 저장된 셀(SUM 깨짐의 상류 원인) — 사람/통계청 파일 빈출.
+_NUMTEXT = re.compile(r"^\s*[₩$€£]?\s*\(?\s*[-+]?\d{1,3}(,\d{3})+(\.\d+)?\s*\)?\s*$")
+
+
+def _numbers_as_text(wb):
+    """숫자인데 텍스트로 저장된 셀 수집(콤마·괄호음수·통화기호). SUM/참조 깨짐 원인."""
+    out = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and _NUMTEXT.match(c.value):
+                    out.append("%s!%s=%r" % (ws.title, c.coordinate, c.value))
+    return out
 
 
 def classify_excel_file(path):
@@ -73,11 +89,18 @@ def run_excel(path, *, fix=False):
             report.append("[fix] restyle_zone %d건(값 불변): %s" % (len(actions), actions[:4]))
     else:
         rest = legacy["num_align"] + legacy["font"] + legacy["annotation"]
-        ok = not (decor or rest)
-        report.append("[external] 사람/외부 파일 비파괴 검수 — 장식=%d 정렬/폰트/주석=%d" % (len(decor), len(rest)))
-        for x in (decor + rest)[:8]:
-            report.append("  ⚠ %s" % x)
-        report.append("  · 심층 재계산(은폐 에러)·golden = freehand 스킬 `xlsx_doctor --external` 권장.")
+        numtext = _numbers_as_text(wb)
+        # 장식문자 + 숫자-텍스트저장(SUM 깨짐)은 hard. 정렬/폰트/주석은 자문성(보고만).
+        ok = not (decor or numtext)
+        report.append("[external] 사람/외부 파일 비파괴 검수 — 장식(hard)=%d 숫자텍스트(hard)=%d / 정렬·폰트·주석(자문)=%d"
+                      % (len(decor), len(numtext), len(rest)))
+        for x in decor[:5]:
+            report.append("  ✗ 장식 %s" % x)
+        for x in numtext[:6]:
+            report.append("  ✗ 숫자-텍스트(SUM깨짐) %s" % x)
+        for x in rest[:6]:
+            report.append("  ⚠ %s (자문)" % x)
+        report.append("  · 숫자-텍스트는 ingest(누더기→tidy) 또는 값 재기입 필요. 심층 재계산·golden = freehand 스킬 `xlsx_doctor --external`.")
         if fix:
             changes = da.restyle_inplace(wb)
             wb.save(path)

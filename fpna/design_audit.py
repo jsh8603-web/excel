@@ -80,8 +80,11 @@ def zone_findings(wb, contract) -> dict:
             spec = blocks.get(bid, {}).get("spec")
             if spec is None:
                 continue                              # 스펙 대상 아닌 band(label 등) — freehand 관용
-            if dz.canon(dz.resolved(ws.cell(r, c))) != dz.canon(spec):
-                out["resolved_drift"].append((ws.title, ws.cell(r, c).coordinate, bid, cb))
+            cell = ws.cell(r, c)
+            if cell.value in (None, ""):
+                continue                              # 빈 셀 = non-data → 관용(DESIGN: 빈셀 hole 아님)
+            if dz.canon(dz.resolved(cell)) != dz.canon(spec):
+                out["resolved_drift"].append((ws.title, cell.coordinate, bid, cb))
         # unsealed: 마커 quadrant 안 데이터셀인데 row/col band 중 *한쪽만* 커버(=미경유 침입/구멍).
         # 둘 다 커버=정상 셀, 둘 다 미커버=진짜 freehand → 관용.
         ar, ac = anchor
